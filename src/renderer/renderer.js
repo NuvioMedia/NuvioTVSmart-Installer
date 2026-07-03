@@ -216,7 +216,13 @@ btnCopyLog.addEventListener('click', async () => {
     .join('\n');
   if (!logText.trim()) return;
 
-  window.installer?.copyText?.(logText);
+  try {
+    await window.installer?.copyText?.(logText);
+  } catch (error) {
+    appendLog(`Failed to copy installation log: ${error?.message || error}`, 'error');
+    return;
+  }
+
   const originalLabel = btnCopyLog.getAttribute('aria-label');
   btnCopyLog.classList.add('copied');
   btnCopyLog.setAttribute('aria-label', 'Log copied');

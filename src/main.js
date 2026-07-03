@@ -1,5 +1,5 @@
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, clipboard, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -673,6 +673,22 @@ async function runSamsungShell(event, transport, args, options = {}) {
   return result.stdout;
 }
 
+async function runOptionalSamsungShell(event, transport, args, description, options = {}) {
+  try {
+    return await runSamsungShell(event, transport, args, options);
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: `${description} was rejected by the TV shell; continuing because package push/install can still work on some Samsung TVs.`
+    });
+    emit(event, {
+      type: "stderr",
+      text: error?.message || String(error)
+    });
+    return "";
+  }
+}
+
 function pushFileAdb(adbClient, remotePath, data) {
   return new Promise((resolve, reject) => {
     const shell = adbClient.createStream("sync:");
@@ -757,11 +773,24 @@ async function pushSamsungFile(event, transport, localPath, remotePath) {
 
 async function verifySamsungRemotePackage(event, transport, localPath, remotePath) {
   const expectedSize = fs.statSync(localPath).size;
-  const output = await runSamsungShell(event, transport, ["ls", "-l", remotePath], {
-    idleAfterDataMs: 800,
-    noOutputSuccessMs: transport.type === "adb" ? 2500 : 0,
-    timeoutMs: 10000
-  });
+  let output = "";
+  try {
+    output = await runSamsungShell(event, transport, ["ls", "-l", remotePath], {
+      idleAfterDataMs: 800,
+      noOutputSuccessMs: transport.type === "adb" ? 2500 : 0,
+      timeoutMs: 10000
+    });
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: "Samsung package upload check was rejected by the TV shell; continuing because the package push command completed."
+    });
+    emit(event, {
+      type: "stderr",
+      text: error?.message || String(error)
+    });
+    return;
+  }
   const remoteSize = Number(String(output || "").trim().split(/\s+/)[4] || 0);
 
   if (!remoteSize && transport.type === "adb") {
@@ -772,8 +801,16 @@ async function verifySamsungRemotePackage(event, transport, localPath, remotePat
     return;
   }
 
-  if (!remoteSize || remoteSize !== expectedSize) {
-    throw new Error(`Samsung package upload failed: remote size ${remoteSize || "unknown"}, expected ${expectedSize}.`);
+  if (!remoteSize) {
+    emit(event, {
+      type: "info",
+      text: "Samsung package upload check did not return a remote size; continuing because the package push command completed."
+    });
+    return;
+  }
+
+  if (remoteSize !== expectedSize) {
+    throw new Error(`Samsung package upload failed: remote size ${remoteSize}, expected ${expectedSize}.`);
   }
 
   emit(event, { type: "info", text: `Samsung package uploaded correctly (${remoteSize} bytes).` });
@@ -786,13 +823,16 @@ function throwIfSamsungOutputFailed(output, context) {
     .find((line) => /install failed|uninstall failed|download failed|check certificate error|error/i.test(line));
 
   if (failedLine) {
-    if (/install failed\[118\]/i.test(failedLine) || /check certificate error/i.test(failedLine)) {
-      throw new Error(
+    if (/install failed\[118\d*\]/i.test(failedLine) || /check certificate error/i.test(failedLine)) {
+      const error = new Error(
         `${context}: ${failedLine}\n\nSamsung TV rejected the signed package. ` +
         "This usually means the package was not signed with a Samsung TV certificate profile trusted by this TV. " +
-        "Try importing/selecting the Samsung TV certificate profile created by Tizen Studio Certificate Manager, " +
+        "If Nuvio is already installed with a different author certificate, uninstall it first or sign updates with the same certificate. " +
+        "You can also import/select the Samsung TV certificate profile created by Tizen Studio Certificate Manager, " +
         "or sign the WGT with Tizen Studio and install that package manually."
       );
+      error.samsungCertificateRejected = true;
+      throw error;
     }
     throw new Error(`${context}: ${failedLine}`);
   }
@@ -1386,8 +1426,8 @@ async function installSamsungPackage(event, transport, packagePath) {
     emit(event, { type: "info", text: `Detected application id: ${metadata.appId}` });
   }
 
-  await runSamsungShell(event, transport, ["0", "mkdir", "-p", "/home/owner/share/tmp/sdk_tools"], { noOutputSuccessMs: 1500 });
-  await runSamsungShell(event, transport, ["0", "rm", "-f", remotePath], { noOutputSuccessMs: 1500 }).catch(() => null);
+  await runOptionalSamsungShell(event, transport, ["0", "mkdir", "-p", "/home/owner/share/tmp/sdk_tools"], "Samsung package staging directory setup", { noOutputSuccessMs: 1500 });
+  await runOptionalSamsungShell(event, transport, ["0", "rm", "-f", remotePath], "Samsung previous staged package cleanup", { noOutputSuccessMs: 1500 });
   await pushSamsungFile(event, transport, packagePath, remotePath);
   await verifySamsungRemotePackage(event, transport, packagePath, remotePath);
 
@@ -1492,6 +1532,10 @@ async function runSamsung(event, action, options) {
     try {
       await installSamsungPackage(event, transport, installPackagePath);
     } catch (error) {
+      if (error?.samsungCertificateRejected) {
+        throw error;
+      }
+
       emit(event, {
         type: "error",
         text: `Samsung direct package install failed before fallback: ${error?.stack || error?.message || String(error)}`
@@ -1553,6 +1597,11 @@ ipcMain.handle("installer:run", async (event, request) => {
     emit(event, { type: "error", text: error.message || String(error) });
     return { ok: false, error: error.message || String(error) };
   }
+});
+
+ipcMain.handle("installer:copyText", async (event, text) => {
+  clipboard.writeText(String(text || ""));
+  return { ok: true };
 });
 
 const { dialog } = require('electron');
