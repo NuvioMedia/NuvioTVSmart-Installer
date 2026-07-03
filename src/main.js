@@ -14,12 +14,30 @@ const AdbPacket = require("adbhost/lib/packet.js");
 const JSZip = require("jszip");
 const forge = require("node-forge");
 const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
-const { Signature, SamsungCertificateCreator } = require("tizen");
+const { SamsungCertificateCreator: StandardSamsungCertificateCreator } = require("tizen");
+const Signature = require("./vendor/tizen-js/src/packageSigner.js");
+const TvCompatibleSamsungCertificateCreator = require("./vendor/tizen-js/src/samsungCertificateCreator.js");
 
 const configPath = path.join(__dirname, "..", "installer.config.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
 const appDisplayName = "Nuvio WebTV Installer";
+const samsungCertificateFlows = {
+  standard: {
+    key: "standard",
+    label: "standard",
+    privilegeLevel: "Partner",
+    generatorVersion: "standard-tizen-js",
+    configSuffix: ""
+  },
+  tvCompatible: {
+    key: "tvCompatible",
+    label: "TV-compatible",
+    privilegeLevel: "Public",
+    generatorVersion: "studio-csr-v1-device-profile",
+    configSuffix: "-tv-compatible"
+  }
+};
 const isWindows = process.platform === "win32";
 const appIconPath = path.join(__dirname, "..", "build", "icon.png");
 const adbCommands = AdbPacket.commands;
@@ -839,25 +857,108 @@ function throwIfSamsungOutputFailed(output, context) {
 }
 
 const samsungPackageCommandCompletePattern = /spend time|install failed|uninstall failed|download failed|check certificate error/i;
+const samsungDeviceProfileRemotePath = "/home/owner/share/tmp/sdk_tools/device-profile.xml";
 
-function getSamsungCertificateConfigPath(target) {
-  const safeTarget = String(target || "default").replace(/[^a-z0-9_.-]+/gi, "_");
-  return path.join(app.getPath("userData"), "samsung-certificates", `${safeTarget}.json`);
+function getSamsungCertificateFlow(flow = "standard") {
+  return samsungCertificateFlows[flow] || samsungCertificateFlows.standard;
 }
 
-async function readSamsungCertificateConfig(target) {
+function getSamsungCertificateConfigPath(target, flow = "standard") {
+  const certificateFlow = getSamsungCertificateFlow(flow);
+  const safeTarget = String(target || "default").replace(/[^a-z0-9_.-]+/gi, "_");
+  return path.join(app.getPath("userData"), "samsung-certificates", `${safeTarget}${certificateFlow.configSuffix}.json`);
+}
+
+function getSamsungDeviceProfilePath(target) {
+  const safeTarget = String(target || "default").replace(/[^a-z0-9_.-]+/gi, "_");
+  return path.join(app.getPath("userData"), "samsung-certificates", `${safeTarget}-device-profile.xml`);
+}
+
+async function readSamsungCertificateConfig(target, flow = "standard") {
   try {
-    const configJson = await fsp.readFile(getSamsungCertificateConfigPath(target), "utf8");
+    const configJson = await fsp.readFile(getSamsungCertificateConfigPath(target, flow), "utf8");
     return JSON.parse(configJson);
   } catch {
     return null;
   }
 }
 
-async function writeSamsungCertificateConfig(target, certificateConfig) {
-  const configPath = getSamsungCertificateConfigPath(target);
+async function writeSamsungCertificateConfig(target, certificateConfig, flow = "standard") {
+  const configPath = getSamsungCertificateConfigPath(target, flow);
   await fsp.mkdir(path.dirname(configPath), { recursive: true });
   await fsp.writeFile(configPath, JSON.stringify(certificateConfig, null, 2));
+}
+
+async function writeSamsungDeviceProfile(target, distributorXML) {
+  const profilePath = getSamsungDeviceProfilePath(target);
+  await fsp.mkdir(path.dirname(profilePath), { recursive: true });
+  await fsp.writeFile(profilePath, distributorXML, "utf8");
+  return profilePath;
+}
+
+function isSamsungDeviceProfileXml(distributorXML) {
+  const profile = String(distributorXML || "").trim();
+  return /^<Profile[\s>]/i.test(profile) && /<Certificate>[\s\S]*<\/Certificate>/i.test(profile);
+}
+
+async function stageSamsungDeviceProfile(event, transport, profilePath, description) {
+  if (!profilePath) {
+    return;
+  }
+
+  await fsp.access(profilePath, fs.constants.R_OK);
+  emit(event, { type: "info", text: `Staging ${description} device profile on the TV.` });
+  await runOptionalSamsungShell(event, transport, ["0", "mkdir", "-p", "/home/owner/share/tmp/sdk_tools"], `${description} device profile staging directory setup`, { noOutputSuccessMs: 1500 });
+  await pushSamsungFile(event, transport, profilePath, samsungDeviceProfileRemotePath);
+}
+
+async function clearSamsungDeviceProfile(event, transport, description) {
+  emit(event, { type: "info", text: `Clearing ${description} device profile from the TV staging directory.` });
+  await runOptionalSamsungShell(event, transport, ["0", "rm", "-f", samsungDeviceProfileRemotePath], `${description} device profile cleanup`, { noOutputSuccessMs: 1500 });
+}
+
+async function stageSavedSamsungCertificateDeviceProfile(event, transport, certificateConfig) {
+  if (!certificateConfig?.distributorXML) {
+    await clearSamsungDeviceProfile(event, transport, "installer-generated Samsung certificate");
+    return;
+  }
+
+  try {
+    const distributorXML = Buffer.from(certificateConfig.distributorXML, "base64").toString("utf8");
+    if (!isSamsungDeviceProfileXml(distributorXML)) {
+      emit(event, {
+        type: "info",
+        text: "Saved Samsung certificate did not include a real device-profile.xml; skipping profile staging."
+      });
+      await clearSamsungDeviceProfile(event, transport, "installer-generated Samsung certificate");
+      return;
+    }
+
+    const profilePath = await writeSamsungDeviceProfile(transport.target, distributorXML);
+    await stageSamsungDeviceProfile(event, transport, profilePath, "installer-generated Samsung certificate");
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: `Installer-generated Samsung device profile could not be staged: ${error?.message || String(error)}`
+    });
+  }
+}
+
+async function stageTizenStudioDeviceProfile(event, transport, profileName) {
+  const normalizedProfileName = String(profileName || "").trim();
+  if (!normalizedProfileName) {
+    return;
+  }
+
+  const profilePath = path.join(os.homedir(), "SamsungCertificate", normalizedProfileName, "device-profile.xml");
+  try {
+    await stageSamsungDeviceProfile(event, transport, profilePath, `Tizen Studio profile "${normalizedProfileName}"`);
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: `Tizen Studio device profile could not be staged: ${error?.message || String(error)}`
+    });
+  }
 }
 
 function samsungAccessInfoHtml(status = "waiting") {
@@ -1026,7 +1127,8 @@ async function getSamsungDuid(event, transport) {
   return duid;
 }
 
-async function createSamsungCertificateForTarget(event, transport, knownDuid = "") {
+async function createSamsungCertificateForTarget(event, transport, knownDuid = "", flow = "standard") {
+  const certificateFlow = getSamsungCertificateFlow(flow);
   const duid = knownDuid || await getSamsungDuid(event, transport);
   const accessInfo = await waitForSamsungAccessInfo(event);
   const accessToken = accessInfo.access_token || accessInfo.accessToken;
@@ -1039,11 +1141,13 @@ async function createSamsungCertificateForTarget(event, transport, knownDuid = "
     name: "Nuvio",
     email: accessInfo.inputEmailID || accessInfo.email || userId,
     password,
-    privilegeLevel: "Partner"
+    privilegeLevel: certificateFlow.privilegeLevel
   };
 
-  emit(event, { type: "info", text: "Creating the Samsung certificate for this TV. This may take 30-60 seconds." });
-  const creator = new SamsungCertificateCreator();
+  emit(event, { type: "info", text: `Creating the ${certificateFlow.label} Samsung ${certificateFlow.privilegeLevel} certificate for this TV. This may take 30-60 seconds.` });
+  const creator = certificateFlow.key === "tvCompatible"
+    ? new TvCompatibleSamsungCertificateCreator()
+    : new StandardSamsungCertificateCreator();
   const certificate = await creator.createCertificate(authorInfo, {
     accessToken,
     userId
@@ -1057,21 +1161,25 @@ async function createSamsungCertificateForTarget(event, transport, knownDuid = "
     authorCert: Buffer.from(certificate.authorCert, "binary").toString("base64"),
     distributorCert: Buffer.from(certificate.distributorCert, "binary").toString("base64"),
     distributorXML: certificate.distributorXML ? Buffer.from(certificate.distributorXML, "utf8").toString("base64") : "",
+    distributorSource: certificate.distributorSource || "",
     password,
     duid,
+    privilegeLevel: certificateFlow.privilegeLevel,
+    generatorVersion: certificateFlow.generatorVersion,
+    signingFlow: certificateFlow.key,
     createdAt: new Date().toISOString()
   };
 
-  await writeSamsungCertificateConfig(transport.target, certificateConfig);
+  await writeSamsungCertificateConfig(transport.target, certificateConfig, certificateFlow.key);
 
   if (certificate.distributorXML) {
-    const profilePath = path.join(app.getPath("userData"), "samsung-certificates", `${String(transport.target).replace(/[^a-z0-9_.-]+/gi, "_")}-device-profile.xml`);
-    await fsp.writeFile(profilePath, certificate.distributorXML, "utf8");
-    await runSamsungShell(event, transport, ["mkdir", "-p", "/home/owner/share/tmp/sdk_tools"], { noOutputSuccessMs: 1500 });
-    await pushSamsungFile(event, transport, profilePath, "/home/owner/share/tmp/sdk_tools/device-profile.xml");
+    await writeSamsungDeviceProfile(transport.target, certificate.distributorXML);
   }
 
-  emit(event, { type: "success", text: "Samsung certificate created and saved for this TV." });
+  if (certificateConfig.distributorSource) {
+    emit(event, { type: "info", text: `Samsung distributor certificate source: ${certificateConfig.distributorSource}.` });
+  }
+  emit(event, { type: "success", text: `${certificateFlow.label} Samsung ${certificateFlow.privilegeLevel} certificate created and saved for this TV.` });
   return certificateConfig;
 }
 
@@ -1109,7 +1217,8 @@ async function readManualSamsungCertificateConfig(options) {
   };
 }
 
-async function getOrCreateSamsungCertificate(event, transport, options = {}) {
+async function getOrCreateSamsungCertificate(event, transport, options = {}, flow = "standard") {
+  const certificateFlow = getSamsungCertificateFlow(flow);
   const manualCertificate = await readManualSamsungCertificateConfig(options);
   if (manualCertificate) {
     emit(event, { type: "info", text: "Using the Samsung certificates selected manually." });
@@ -1117,16 +1226,49 @@ async function getOrCreateSamsungCertificate(event, transport, options = {}) {
   }
 
   const duid = await getSamsungDuid(event, transport);
-  const existing = await readSamsungCertificateConfig(transport.target);
+  let existing = await readSamsungCertificateConfig(transport.target, certificateFlow.key);
+  if (!existing && certificateFlow.key === "tvCompatible") {
+    const migrated = await readSamsungCertificateConfig(transport.target, "standard");
+    if (
+      migrated?.authorCert &&
+      migrated?.distributorCert &&
+      migrated?.password &&
+      migrated?.duid === duid &&
+      migrated?.generatorVersion === certificateFlow.generatorVersion &&
+      migrated?.privilegeLevel === certificateFlow.privilegeLevel
+    ) {
+      existing = migrated;
+      await writeSamsungCertificateConfig(transport.target, migrated, certificateFlow.key);
+    }
+  }
+
   if (existing?.authorCert && existing?.distributorCert && existing?.password && existing?.duid === duid) {
-    emit(event, { type: "info", text: "Using the Samsung certificate already saved for this TV." });
+    const existingPrivilegeLevel = existing.privilegeLevel || samsungCertificateFlows.standard.privilegeLevel;
+    const existingGeneratorVersion = existing.generatorVersion || samsungCertificateFlows.standard.generatorVersion;
+    if (certificateFlow.key === "tvCompatible" && existingPrivilegeLevel !== certificateFlow.privilegeLevel) {
+      emit(event, {
+        type: "info",
+        text: `Saved TV-compatible Samsung certificate is ${existingPrivilegeLevel}; creating a new ${certificateFlow.privilegeLevel} certificate for this TV.`
+      });
+      return createSamsungCertificateForTarget(event, transport, duid, certificateFlow.key);
+    }
+
+    if (certificateFlow.key === "tvCompatible" && existingGeneratorVersion !== certificateFlow.generatorVersion) {
+      emit(event, {
+        type: "info",
+        text: "Saved TV-compatible Samsung certificate was created by an older installer signing flow; creating a new one."
+      });
+      return createSamsungCertificateForTarget(event, transport, duid, certificateFlow.key);
+    }
+
+    emit(event, { type: "info", text: `Using the ${certificateFlow.label} Samsung certificate already saved for this TV.` });
     return existing;
   }
 
   if (existing?.duid && existing.duid !== duid) {
-    emit(event, { type: "info", text: "Saved Samsung certificate belongs to a different TV, creating a new one." });
+    emit(event, { type: "info", text: `Saved ${certificateFlow.label} Samsung certificate belongs to a different TV, creating a new one.` });
   }
-  return createSamsungCertificateForTarget(event, transport, duid);
+  return createSamsungCertificateForTarget(event, transport, duid, certificateFlow.key);
 }
 
 async function parseTizenPackageMetadata(packagePath) {
@@ -1298,6 +1440,13 @@ function tizenIdentifierCandidates(...values) {
     .filter(Boolean)));
 }
 
+function compareTizenPackagePath(left, right) {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+}
+
 async function listSamsungApps(event, transport) {
   const result = await captureSamsungShell(event, transport, ["0", "vd_applist"]);
   return parseVdAppList(result.stdout);
@@ -1326,31 +1475,54 @@ async function resignTizenPackageWithSamsungCertificate(event, packagePath, cert
   emit(event, { type: "info", text: "Automatically signing the WGT with the saved Samsung certificate." });
 
   const zip = await JSZip.loadAsync(fs.readFileSync(packagePath));
-  const unsignedFiles = await Promise.all(Object.keys(zip.files).map(async (filename) => {
+  const unsignedFileNames = Object.keys(zip.files)
+    .filter((filename) => {
+      const file = zip.files[filename];
+      return !file.dir && filename !== "author-signature.xml" && filename !== "signature1.xml";
+    })
+    .sort(compareTizenPackagePath);
+  const unsignedFiles = await Promise.all(unsignedFileNames.map(async (filename) => {
     const file = zip.files[filename];
-    if (file.dir || filename === "author-signature.xml" || filename === "signature1.xml") {
-      return null;
-    }
     return {
       uri: encodeURIComponent(filename),
       data: await file.async("nodebuffer")
     };
   }));
 
+  function insertSignedFileInOrder(files, signedFile) {
+    const nextFiles = [...files];
+    const signedFilename = decodeURIComponent(signedFile.uri);
+    const insertAt = nextFiles.findIndex((file) => compareTizenPackagePath(decodeURIComponent(file.uri), signedFilename) > 0);
+    if (insertAt === -1) {
+      nextFiles.push(signedFile);
+    } else {
+      nextFiles.splice(insertAt, 0, signedFile);
+    }
+    return nextFiles;
+  }
+
+  function writeSignedFilesInOrder(outputZip, signedFiles) {
+    [...signedFiles]
+      .sort((left, right) => compareTizenPackagePath(decodeURIComponent(left.uri), decodeURIComponent(right.uri)))
+      .forEach((file) => {
+        outputZip.file(decodeURIComponent(file.uri), file.data);
+      });
+  }
+
   const authorDer = forge.util.createBuffer(Buffer.from(certificateConfig.authorCert, "base64").toString("binary"));
   const distributorDer = forge.util.createBuffer(Buffer.from(certificateConfig.distributorCert, "base64").toString("binary"));
   const authorKey = forge.pkcs12.pkcs12FromAsn1(forge.asn1.fromDer(authorDer), false, certificateConfig.password);
   const distributorKey = forge.pkcs12.pkcs12FromAsn1(forge.asn1.fromDer(distributorDer), false, certificateConfig.password);
 
-  const authorSignature = new Signature("AuthorSignature", unsignedFiles.filter(Boolean));
+  const authorSignature = new Signature("AuthorSignature", [...unsignedFiles]);
   const authorFiles = await authorSignature.sign(authorKey);
-  const distributorSignature = new Signature("DistributorSignature", authorFiles);
+  const authorSignatureFile = authorFiles.find((file) => file.uri === "author-signature.xml");
+  const distributorInputFiles = insertSignedFileInOrder(unsignedFiles, authorSignatureFile);
+  const distributorSignature = new Signature("DistributorSignature", [...distributorInputFiles]);
   const distributorFiles = await distributorSignature.sign(distributorKey);
 
   const outputZip = new JSZip();
-  distributorFiles.forEach((file) => {
-    outputZip.file(decodeURIComponent(file.uri), file.data);
-  });
+  writeSignedFilesInOrder(outputZip, distributorFiles);
 
   const outputDir = path.join(app.getPath("userData"), "resigned");
   await fsp.mkdir(outputDir, { recursive: true });
@@ -1446,14 +1618,49 @@ async function signTizenPackageWithActiveStudioProfile(event, packagePath) {
   }
 
   const normalizedPackagePath = await normalizeSamsungPackageMetadata(event, packagePath);
-  return signTizenPackageWithStudioProfile(event, normalizedPackagePath, profileName);
+  return {
+    packagePath: await signTizenPackageWithStudioProfile(event, normalizedPackagePath, profileName),
+    profileName
+  };
 }
 
-async function prepareSamsungPackage(event, transport, packagePath, options = {}) {
+async function prepareSamsungPackage(event, transport, packagePath, options = {}, flow = "standard") {
+  const certificateFlow = getSamsungCertificateFlow(flow);
   packagePath = await normalizeSamsungPackageMetadata(event, packagePath);
   emit(event, { type: "info", text: "Skipping local Tizen P2P Web Service validation for Samsung install test." });
-  const certificateConfig = await getOrCreateSamsungCertificate(event, transport, options);
-  return resignTizenPackageWithSamsungCertificate(event, packagePath, certificateConfig);
+  const certificateConfig = await getOrCreateSamsungCertificate(event, transport, options, certificateFlow.key);
+  const signedPackagePath = await resignTizenPackageWithSamsungCertificate(event, packagePath, certificateConfig);
+  if (certificateConfig?.profileName) {
+    await stageTizenStudioDeviceProfile(event, transport, certificateConfig.profileName);
+  } else {
+    await stageSavedSamsungCertificateDeviceProfile(event, transport, certificateConfig);
+  }
+  return signedPackagePath;
+}
+
+async function retrySamsungInstallWithTvCompatibleCertificate(event, transport, packagePath, options, identifiers, originalError) {
+  emit(event, {
+    type: "info",
+    text: "The standard installer-signed package was rejected by the TV. Trying the TV-compatible Samsung certificate flow."
+  });
+
+  let signedPackagePath = "";
+  try {
+    signedPackagePath = await prepareSamsungPackage(event, transport, packagePath, options, "tvCompatible");
+    await installSamsungPackage(event, transport, signedPackagePath);
+    return true;
+  } catch (error) {
+    emit(event, {
+      type: "error",
+      text: `TV-compatible certificate retry failed: ${error?.stack || error?.message || String(error)}`
+    });
+
+    if (!error?.samsungCertificateRejected || !signedPackagePath) {
+      return false;
+    }
+  }
+
+  return retrySamsungInstallAfterCleanUninstall(event, transport, signedPackagePath, identifiers, originalError);
 }
 
 async function retrySamsungInstallWithActiveStudioProfile(event, transport, packagePath, originalError) {
@@ -1463,8 +1670,9 @@ async function retrySamsungInstallWithActiveStudioProfile(event, transport, pack
   });
 
   try {
-    const studioSignedPackagePath = await signTizenPackageWithActiveStudioProfile(event, packagePath);
-    await installSamsungPackage(event, transport, studioSignedPackagePath);
+    const studioSigned = await signTizenPackageWithActiveStudioProfile(event, packagePath);
+    await stageTizenStudioDeviceProfile(event, transport, studioSigned.profileName);
+    await installSamsungPackage(event, transport, studioSigned.packagePath);
     return true;
   } catch (error) {
     emit(event, {
@@ -1473,6 +1681,42 @@ async function retrySamsungInstallWithActiveStudioProfile(event, transport, pack
     });
     if (error?.samsungCertificateRejected) {
       throw error;
+    }
+    throw originalError;
+  }
+}
+
+async function retrySamsungInstallAfterCleanUninstall(event, transport, signedPackagePath, identifiers, originalError) {
+  let installedApp = null;
+  try {
+    installedApp = await findSamsungInstalledApp(event, transport, identifiers);
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: `Could not check whether Nuvio is already installed before clean retry: ${error?.message || String(error)}`
+    });
+  }
+
+  if (!installedApp) {
+    return false;
+  }
+
+  emit(event, {
+    type: "info",
+    text: "The TV rejected the installer-signed package while Nuvio is already installed. Uninstalling the existing app and retrying once with the same installer-generated certificate."
+  });
+
+  try {
+    await uninstallSamsungApp(event, transport, identifiers);
+    await installSamsungPackage(event, transport, signedPackagePath);
+    return true;
+  } catch (error) {
+    emit(event, {
+      type: "error",
+      text: `Clean reinstall retry failed: ${error?.stack || error?.message || String(error)}`
+    });
+    if (error?.samsungCertificateRejected) {
+      return false;
     }
     throw originalError;
   }
@@ -1599,8 +1843,13 @@ async function runSamsung(event, action, options) {
     } catch (error) {
       if (error?.samsungCertificateRejected) {
         if (!options?.samsungCert?.profileName) {
-          const recovered = await retrySamsungInstallWithActiveStudioProfile(event, transport, packagePath, error);
-          if (recovered) {
+          const recoveredByTvCompatibleCertificate = await retrySamsungInstallWithTvCompatibleCertificate(event, transport, packagePath, options, configuredIds, error);
+          if (recoveredByTvCompatibleCertificate) {
+            return;
+          }
+
+          const recoveredByStudioProfile = await retrySamsungInstallWithActiveStudioProfile(event, transport, packagePath, error);
+          if (recoveredByStudioProfile) {
             return;
           }
         }
