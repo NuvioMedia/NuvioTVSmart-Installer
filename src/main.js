@@ -897,8 +897,13 @@ async function writeSamsungDeviceProfile(target, distributorXML) {
 }
 
 function isSamsungDeviceProfileXml(distributorXML) {
-  const profile = String(distributorXML || "").trim();
-  return /^<Profile[\s>]/i.test(profile) && /<Certificate>[\s\S]*<\/Certificate>/i.test(profile);
+  try {
+    const doc = new DOMParser().parseFromString(String(distributorXML || ""), "text/xml");
+    const root = doc.documentElement;
+    return root?.localName === "Profile" && root.getElementsByTagName("Certificate").length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function stageSamsungDeviceProfile(event, transport, profilePath, description) {
@@ -1579,12 +1584,26 @@ async function signTizenPackageWithStudioProfile(event, packagePath, profileName
 }
 
 function parseActiveTizenStudioProfile(output = "") {
-  return String(output || "")
+  const lines = String(output || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("[") && !line.startsWith("Loaded in"))
+    .filter((line) => (
+      line
+      && !line.startsWith("[")
+      && !line.startsWith("Loaded in")
+      && !/^[=-]+$/.test(line)
+      && !/^name(\s+active)?$/i.test(line)
+      && !/^profile\s+name$/i.test(line)
+    ));
+
+  const activeProfile = lines
     .map((line) => line.match(/^(.+?)\s+O\s*$/)?.[1]?.trim() || "")
-    .find(Boolean) || "";
+    .find(Boolean);
+  if (activeProfile) {
+    return activeProfile;
+  }
+
+  return lines[0] || "";
 }
 
 async function getActiveTizenStudioProfile(event) {
@@ -1645,11 +1664,13 @@ async function retrySamsungInstallWithTvCompatibleCertificate(event, transport, 
   });
 
   let signedPackagePath = "";
+  let cleanRetryIdentifiers = tizenIdentifierCandidates(identifiers);
   try {
     signedPackagePath = await prepareSamsungPackage(event, transport, packagePath, options, "tvCompatible");
     await installSamsungPackage(event, transport, signedPackagePath);
     return true;
   } catch (error) {
+    cleanRetryIdentifiers = tizenIdentifierCandidates(error?.tizenInstallIds, cleanRetryIdentifiers);
     emit(event, {
       type: "error",
       text: `TV-compatible certificate retry failed: ${error?.stack || error?.message || String(error)}`
@@ -1660,7 +1681,7 @@ async function retrySamsungInstallWithTvCompatibleCertificate(event, transport, 
     }
   }
 
-  return retrySamsungInstallAfterCleanUninstall(event, transport, signedPackagePath, identifiers, originalError);
+  return retrySamsungInstallAfterCleanUninstall(event, transport, signedPackagePath, cleanRetryIdentifiers, originalError);
 }
 
 async function retrySamsungInstallWithActiveStudioProfile(event, transport, packagePath, originalError) {
@@ -1687,9 +1708,23 @@ async function retrySamsungInstallWithActiveStudioProfile(event, transport, pack
 }
 
 async function retrySamsungInstallAfterCleanUninstall(event, transport, signedPackagePath, identifiers, originalError) {
+  let retryTransport = transport;
+  if (transport.type !== "sdb") {
+    try {
+      emit(event, { type: "info", text: "Clean reinstall requires Samsung sdb; reconnecting with sdb before uninstalling the existing app." });
+      retryTransport = await connectSamsungSdbTransport(event, transport.target);
+    } catch (error) {
+      emit(event, {
+        type: "info",
+        text: `Clean reinstall retry requires sdb, but sdb connection failed: ${error?.message || String(error)}`
+      });
+      return false;
+    }
+  }
+
   let installedApp = null;
   try {
-    installedApp = await findSamsungInstalledApp(event, transport, identifiers);
+    installedApp = await findSamsungInstalledApp(event, retryTransport, identifiers);
   } catch (error) {
     emit(event, {
       type: "info",
@@ -1707,8 +1742,8 @@ async function retrySamsungInstallAfterCleanUninstall(event, transport, signedPa
   });
 
   try {
-    await uninstallSamsungApp(event, transport, identifiers);
-    await installSamsungPackage(event, transport, signedPackagePath);
+    await uninstallSamsungApp(event, retryTransport, identifiers);
+    await installSamsungPackage(event, retryTransport, signedPackagePath);
     return true;
   } catch (error) {
     emit(event, {
@@ -1720,6 +1755,14 @@ async function retrySamsungInstallAfterCleanUninstall(event, transport, signedPa
     }
     throw originalError;
   }
+}
+
+function attachSamsungInstallMetadata(error, metadata, installIds) {
+  if (error && typeof error === "object") {
+    error.tizenPackageMetadata = metadata;
+    error.tizenInstallIds = installIds;
+  }
+  return error;
 }
 
 async function installSamsungPackage(event, transport, packagePath) {
@@ -1750,7 +1793,7 @@ async function installSamsungPackage(event, transport, packagePath) {
       throwIfSamsungOutputFailed(output, `vd_appinstall failed with ${installId}`);
       return metadata;
     } catch (error) {
-      lastError = error;
+      lastError = attachSamsungInstallMetadata(error, metadata, installIds);
       emit(event, {
         type: "error",
         text: `vd_appinstall with ${installId} failed: ${error?.stack || error?.message || String(error)}`
@@ -1759,7 +1802,7 @@ async function installSamsungPackage(event, transport, packagePath) {
     }
   }
 
-  throw lastError || new Error("vd_appinstall failed.");
+  throw attachSamsungInstallMetadata(lastError || new Error("vd_appinstall failed."), metadata, installIds);
 }
 
 async function uninstallSamsungApp(event, transport, identifiers) {
@@ -1843,7 +1886,8 @@ async function runSamsung(event, action, options) {
     } catch (error) {
       if (error?.samsungCertificateRejected) {
         if (!options?.samsungCert?.profileName) {
-          const recoveredByTvCompatibleCertificate = await retrySamsungInstallWithTvCompatibleCertificate(event, transport, packagePath, options, configuredIds, error);
+          const failedInstallIds = tizenIdentifierCandidates(error?.tizenInstallIds, configuredIds);
+          const recoveredByTvCompatibleCertificate = await retrySamsungInstallWithTvCompatibleCertificate(event, transport, packagePath, options, failedInstallIds, error);
           if (recoveredByTvCompatibleCertificate) {
             return;
           }

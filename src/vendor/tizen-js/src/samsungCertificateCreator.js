@@ -35,8 +35,13 @@ function getProfileCertificatePem(profileXml) {
 }
 
 function isDeviceProfileXml(text) {
-  const value = String(text || "").trim();
-  return /^<Profile[\s>]/i.test(value) && /<Certificate>[\s\S]*<\/Certificate>/i.test(value);
+  try {
+    const doc = new DOMParser().parseFromString(String(text || ""), "text/xml");
+    const root = doc.documentElement;
+    return root?.localName === "Profile" && root.getElementsByTagName("Certificate").length > 0;
+  } catch {
+    return false;
+  }
 }
 
 class SamsungCertificateCreator {
