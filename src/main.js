@@ -2065,6 +2065,7 @@ async function installSamsungPackage(event, transport, packagePath) {
   await verifySamsungRemotePackage(event, transport, packagePath, remotePath);
 
   let lastError = null;
+  let certificateError = null;
   for (const installId of installIds) {
     try {
       const output = await runSamsungShell(event, transport, ["0", "vd_appinstall", installId, remotePath], {
@@ -2078,7 +2079,14 @@ async function installSamsungPackage(event, transport, packagePath) {
         throw samsungPlatformIncompatibilityError(metadata.requiredVersion);
       }
       if (isSamsungCertificateRejection(error)) {
-        throw error;
+        // 118012 is also returned when the TV cannot resolve the supplied identifier, so
+        // exhaust the id fallback before reporting a certificate rejection.
+        certificateError = certificateError || error;
+        emit(event, {
+          type: "info",
+          text: `Samsung rejected ${installId}; trying the next Samsung identifier before reporting a certificate error.`
+        });
+        continue;
       }
       lastError = error;
       emit(event, {
@@ -2089,7 +2097,7 @@ async function installSamsungPackage(event, transport, packagePath) {
     }
   }
 
-  throw lastError || new Error("vd_appinstall failed.");
+  throw certificateError || lastError || new Error("vd_appinstall failed.");
 }
 
 async function uninstallSamsungApp(event, transport, identifiers) {
