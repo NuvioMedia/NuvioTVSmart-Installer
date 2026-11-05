@@ -236,12 +236,16 @@ function captureCommand(event, command, args, options = {}) {
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString();
       stdout += text;
-      emit(event, { type: "stdout", text });
+      if (options.logOutput !== false) {
+        emit(event, { type: "stdout", text });
+      }
     });
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderr += text;
-      emit(event, { type: "stderr", text });
+      if (options.logOutput !== false) {
+        emit(event, { type: "stderr", text });
+      }
     });
     child.on("error", finish);
     child.on("exit", (code) => {
@@ -965,7 +969,7 @@ async function verifySamsungRemotePackage(event, transport, localPath, remotePat
   const expectedSize = fs.statSync(localPath).size;
   let output = "";
   try {
-    output = await runSamsungShell(event, transport, ["ls", "-l", remotePath], {
+    output = await runSamsungShell(event, transport, ["0", "ls", "-l", remotePath], {
       idleAfterDataMs: 800,
       noOutputSuccessMs: transport.type === "adb" ? 2500 : 0,
       timeoutMs: 10000
@@ -991,16 +995,16 @@ async function verifySamsungRemotePackage(event, transport, localPath, remotePat
 
   const remoteSize = Number(String(output || "").trim().split(/\s+/)[4] || 0);
 
-  if (!remoteSize && transport.type === "adb") {
+  if (!remoteSize) {
     emit(event, {
       type: "info",
-      text: "Samsung package upload check did not return ls output on direct connection; continuing because adbhost push completed."
+      text: "Samsung package upload check did not return a remote size; continuing because the push command completed."
     });
     return;
   }
 
-  if (!remoteSize || remoteSize !== expectedSize) {
-    throw new Error(`Samsung package upload failed: remote size ${remoteSize || "unknown"}, expected ${expectedSize}.`);
+  if (remoteSize !== expectedSize) {
+    throw new Error(`Samsung package upload failed: remote size ${remoteSize}, expected ${expectedSize}.`);
   }
 
   emit(event, { type: "info", text: `Samsung package uploaded correctly (${remoteSize} bytes).` });
@@ -1603,6 +1607,7 @@ async function parseTizenPackageMetadata(packagePath) {
     return {
       packageId: application.getAttribute("package") || "",
       appId: application.getAttribute("id") || "",
+      version: doc.documentElement.getAttribute("version") || "",
       requiredVersion: application.getAttribute("required_version") || "",
       extension: "wgt"
     };
@@ -1615,6 +1620,7 @@ async function parseTizenPackageMetadata(packagePath) {
     return {
       packageId: manifest?.getAttribute("package") || "",
       appId: manifest?.getAttribute("package") || "",
+      version: manifest?.getAttribute("version") || "",
       requiredVersion: "",
       extension: "tpk"
     };
@@ -1885,7 +1891,10 @@ function tizenIdentifierCandidates(...values) {
 }
 
 async function listSamsungApps(event, transport) {
-  const result = await captureSamsungShell(event, transport, ["0", "vd_applist"]);
+  const result = await captureSamsungShell(event, transport, ["0", "vd_applist"], {
+    logOutput: false,
+    timeoutMs: 30000
+  });
   return parseVdAppList(result.stdout);
 }
 
@@ -1902,6 +1911,44 @@ async function findSamsungInstalledApp(event, transport, identifiers) {
     app.app_package_id,
     app.package_id
   ].some((value) => candidates.includes(String(value || "").trim()))) || null;
+}
+
+async function verifySamsungInstalledPackage(event, transport, metadata) {
+  let installedApp = null;
+  try {
+    installedApp = await findSamsungInstalledApp(event, transport, tizenIdentifierCandidates(metadata?.packageId, metadata?.appId));
+  } catch (error) {
+    emit(event, {
+      type: "info",
+      text: `Samsung install verification could not read the installed app list: ${error?.message || String(error)}`
+    });
+    throw new Error(
+      "The Samsung install command finished, but the installer could not verify that Nuvio TV is installed on the TV. " +
+      "Retry the install, or install the WGT with Tizen Studio/sdb using vd_appinstall."
+    );
+  }
+
+  if (!installedApp) {
+    throw new Error(
+      "The Samsung install command finished but Nuvio TV is not installed on the TV. " +
+      "The package was uploaded but not registered; retry the install, or install the WGT with Tizen Studio/sdb using vd_appinstall."
+    );
+  }
+
+  const installedVersion = String(installedApp.app_version || "").trim();
+  const expectedVersion = String(metadata?.version || "").trim();
+  const versionComparison = compareTizenVersions(installedVersion, expectedVersion);
+  if (versionComparison !== null && versionComparison !== 0) {
+    throw new Error(
+      `The Samsung install command finished but the TV still reports Nuvio TV ${installedVersion}, expected ${expectedVersion}. ` +
+      "The update was not applied; retry the install, or install the WGT with Tizen Studio/sdb using vd_appinstall."
+    );
+  }
+
+  emit(event, {
+    type: "info",
+    text: `Verified Samsung installation on the TV: ${installedApp.app_id || installedApp.app_tizen_id || metadata?.appId || metadata?.packageId}${installedVersion ? ` (${installedVersion})` : ""}.`
+  });
 }
 
 async function resignTizenPackageWithSamsungCertificate(event, packagePath, certificateConfig) {
@@ -2073,6 +2120,7 @@ async function installSamsungPackage(event, transport, packagePath) {
         timeoutMs: 180000
       });
       throwIfSamsungOutputFailed(output, `vd_appinstall failed with ${installId}`);
+      await verifySamsungInstalledPackage(event, transport, metadata);
       return metadata;
     } catch (error) {
       if (isSamsungPlatformIncompatibility(error)) {
@@ -2258,6 +2306,7 @@ async function runSamsung(event, action, options) {
 
         await runCommand(event, fallbackTransport.sdb, ["-s", fallbackTransport.target, "install", installPackagePath]);
         installedMetadata = await parseTizenPackageMetadata(installPackagePath);
+        await verifySamsungInstalledPackage(event, fallbackTransport, installedMetadata);
         await markSamsungCertificateInstallSuccessful(
           event,
           transport,
@@ -2280,6 +2329,7 @@ async function runSamsung(event, action, options) {
         emit(event, { type: "info", text: "sdb install failed, trying fallback with the tizen CLI found on the system." });
         await runCommand(event, tizen, ["install", "-n", installPackagePath, "-t", tizenTarget]);
         installedMetadata = await parseTizenPackageMetadata(installPackagePath);
+        await verifySamsungInstalledPackage(event, fallbackTransport, installedMetadata);
         await markSamsungCertificateInstallSuccessful(
           event,
           transport,
