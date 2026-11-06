@@ -15,6 +15,7 @@ const JSZip = require("jszip");
 const forge = require("node-forge");
 const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
 const { Signature, SamsungCertificateCreator } = require("tizen");
+const { hasValidSamsungAuthorChain } = require("./samsung-certificate-chain");
 
 const configPath = path.join(__dirname, "..", "installer.config.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -35,6 +36,14 @@ const tizenEngineFsServicePort = 2710;
 const tizenPluginServicePath = "services/tizen/plugin-service.js";
 const tizenPluginServiceSourcePath = "services/plugin-http.cjs";
 const tizenPluginServicePort = 2711;
+const samsungCertificateExtensionInfoUrl = "https://download.tizen.org/sdk/tizenstudio/official/extension_info.xml";
+const samsungCertificateAuthorityDirectory = path.join(os.homedir(), "share", ".samsung-cert");
+const samsungCertificateAuthorityMarker = path.join(samsungCertificateAuthorityDirectory, ".extension");
+const samsungCertificateAuthorityFiles = [
+  "vd_tizen_dev_author_ca.cer",
+  "vd_tizen_dev_public2.crt",
+  "vd_tizen_dev_partner2.crt"
+];
 let migratedLegacySamsungCertificateCount = 0;
 
 app.setName(appDisplayName);
@@ -308,7 +317,7 @@ async function fetchJson(url) {
   return response.json();
 }
 
-async function downloadFile(event, url, targetPath) {
+async function downloadFile(event, url, targetPath, options = {}) {
   emit(event, { type: "info", text: `Download ${url}` });
   const response = await fetch(url, {
     headers: { "User-Agent": "Nuvio-TV-Installer" }
@@ -319,9 +328,22 @@ async function downloadFile(event, url, targetPath) {
   }
 
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  const totalBytes = Number(response.headers.get("content-length")) || 0;
+  let receivedBytes = 0;
+  let lastReportedPercent = 0;
   const file = fs.createWriteStream(targetPath);
   await new Promise((resolve, reject) => {
     const body = Readable.fromWeb(response.body);
+    if (options.progressLabel) {
+      body.on("data", (chunk) => {
+        receivedBytes += chunk.length;
+        const percent = totalBytes ? Math.floor((receivedBytes / totalBytes) * 100) : 0;
+        if (percent >= lastReportedPercent + 10) {
+          lastReportedPercent = percent;
+          emit(event, { type: "info", text: `${options.progressLabel}: ${percent}%` });
+        }
+      });
+    }
     body.pipe(file);
     body.on("error", reject);
     file.on("finish", resolve);
@@ -1213,6 +1235,98 @@ function getSamsungCertificateFingerprint(certificateConfig) {
   return crypto.createHash("sha256").update(authorCert).digest("hex");
 }
 
+function samsungCertificateAuthoritiesAreCached() {
+  return samsungCertificateAuthorityFiles.every((fileName) => fs.existsSync(path.join(samsungCertificateAuthorityDirectory, fileName)));
+}
+
+async function readSamsungCertificateAuthorityMarker() {
+  try {
+    return (await fsp.readFile(samsungCertificateAuthorityMarker, "utf8")).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function getSamsungCertificateExtensionRepository() {
+  const response = await fetch(samsungCertificateExtensionInfoUrl, {
+    headers: { "User-Agent": "Nuvio-TV-Installer" },
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) {
+    throw new Error(`Samsung certificate extension info failed: ${response.status} ${response.statusText}`);
+  }
+
+  const document = new DOMParser().parseFromString(await response.text(), "text/xml");
+  const extension = Array.from(document.getElementsByTagName("extension"))
+    .find((item) => item.getElementsByTagName("name")[0]?.textContent.trim() === "Samsung Certificate Extension");
+  const repository = extension?.getElementsByTagName("repository")[0]?.textContent.trim();
+  if (!repository) {
+    throw new Error("Samsung certificate extension info did not contain a repository.");
+  }
+  return repository;
+}
+
+async function downloadSamsungCertificateAuthorities(event, repository) {
+  emit(event, { type: "info", text: "The cached Samsung certificate authorities are out of date; refreshing them before signing." });
+  const archivePath = path.join(app.getPath("temp"), `nuvio-samsung-certificate-extension-${Date.now()}.zip`);
+  try {
+    await downloadFile(event, repository, archivePath, {
+      progressLabel: "Downloading Samsung certificate authorities"
+    });
+    const extensionZip = await JSZip.loadAsync(await fsp.readFile(archivePath));
+    const addonFileName = Object.keys(extensionZip.files).find((name) => name.endsWith(".zip"));
+    if (!addonFileName) {
+      throw new Error("The Samsung certificate extension did not contain an add-on package.");
+    }
+    const addonZip = await JSZip.loadAsync(await extensionZip.files[addonFileName].async("nodebuffer"));
+    const jarFileName = Object.keys(addonZip.files).find((name) => name.endsWith(".jar"));
+    if (!jarFileName) {
+      throw new Error("The Samsung certificate extension did not contain a certificate manager.");
+    }
+    const jarZip = await JSZip.loadAsync(await addonZip.files[jarFileName].async("nodebuffer"));
+    const certificateFiles = Object.keys(jarZip.files).filter((name) => /\.(crt|cer)$/i.test(name));
+    if (certificateFiles.length === 0) {
+      throw new Error("The Samsung certificate extension did not contain certificate authorities.");
+    }
+
+    await fsp.mkdir(samsungCertificateAuthorityDirectory, { recursive: true });
+    await fsp.rm(samsungCertificateAuthorityMarker, { force: true });
+    for (const entry of await fsp.readdir(samsungCertificateAuthorityDirectory)) {
+      if (/\.(crt|cer)$/i.test(entry)) {
+        await fsp.rm(path.join(samsungCertificateAuthorityDirectory, entry), { force: true });
+      }
+    }
+    for (const certificateFile of certificateFiles) {
+      const targetPath = path.join(samsungCertificateAuthorityDirectory, path.basename(certificateFile));
+      await fsp.writeFile(targetPath, await jarZip.files[certificateFile].async("nodebuffer"));
+    }
+    await fsp.writeFile(samsungCertificateAuthorityMarker, repository);
+  } finally {
+    await fsp.rm(archivePath, { force: true }).catch(() => {});
+  }
+}
+
+async function ensureSamsungCertificateAuthorities(event) {
+  let repository;
+  try {
+    repository = await getSamsungCertificateExtensionRepository();
+  } catch (error) {
+    if (samsungCertificateAuthoritiesAreCached()) {
+      emit(event, {
+        type: "info",
+        text: `Could not check for a newer Samsung certificate extension; using the cached certificate authorities. ${error?.message || String(error)}`
+      });
+      return;
+    }
+    throw error;
+  }
+
+  if (repository === await readSamsungCertificateAuthorityMarker() && samsungCertificateAuthoritiesAreCached()) {
+    return;
+  }
+  await downloadSamsungCertificateAuthorities(event, repository);
+}
+
 function isUsableSamsungCertificateConfig(certificateConfig, duid = "") {
   return Boolean(
     certificateConfig?.authorCert
@@ -1250,7 +1364,7 @@ async function writeSamsungCertificateConfigForDuid(duid, certificateConfig) {
   await writeSamsungCertificateConfigFile(getSamsungCertificateDuidConfigPath(duid), certificateConfig);
 }
 
-async function readSamsungCertificateCandidates(duid, target) {
+async function readSamsungCertificateCandidates(duid, target, invalidCertificatePaths = []) {
   const certificateDirectory = getSamsungCertificateDirectory();
   let configPaths = [];
   try {
@@ -1267,6 +1381,13 @@ async function readSamsungCertificateCandidates(duid, target) {
   for (const configPath of configPaths) {
     const certificateConfig = await readSamsungCertificateConfigFile(configPath);
     if (!isUsableSamsungCertificateConfig(certificateConfig, duid)) {
+      continue;
+    }
+    if (!certificateConfig.profileName && !hasValidSamsungAuthorChain(
+      Buffer.from(String(certificateConfig.authorCert || ""), "base64"),
+      certificateConfig.password
+    )) {
+      invalidCertificatePaths.push(configPath);
       continue;
     }
     await fsp.chmod(configPath, 0o600).catch(() => {});
@@ -1472,6 +1593,7 @@ async function createSamsungCertificateForTarget(event, transport, knownDuid = "
     privilegeLevel: "Partner"
   };
 
+  await ensureSamsungCertificateAuthorities(event);
   emit(event, { type: "info", text: "Creating the Samsung certificate for this TV. This may take 30-60 seconds." });
   const creator = new SamsungCertificateCreator();
   const certificate = await creator.createCertificate(authorInfo, {
@@ -1491,6 +1613,13 @@ async function createSamsungCertificateForTarget(event, transport, knownDuid = "
     duid,
     createdAt: new Date().toISOString()
   };
+
+  if (!hasValidSamsungAuthorChain(Buffer.from(certificate.authorCert, "binary"), password)) {
+    throw new Error(
+      "Samsung issued an author certificate that does not match the downloaded certificate authorities. " +
+      "To avoid producing a WGT the TV would reject, the certificate was not saved; retry the install."
+    );
+  }
 
   await writeSamsungCertificateConfigForDuid(duid, certificateConfig);
   await writeSamsungCertificateConfig(transport.target, certificateConfig);
@@ -1564,7 +1693,14 @@ async function getSamsungCertificateCandidates(event, transport, options = {}) {
       text: `Recovered ${migratedLegacySamsungCertificateCount} Samsung signing identity file${migratedLegacySamsungCertificateCount === 1 ? "" : "s"} from the previous Nuvio WebTV Installer data folder.`
     });
   }
-  const candidates = await readSamsungCertificateCandidates(duid, transport.target);
+  const invalidCertificatePaths = [];
+  const candidates = await readSamsungCertificateCandidates(duid, transport.target, invalidCertificatePaths);
+  if (invalidCertificatePaths.length > 0) {
+    emit(event, {
+      type: "info",
+      text: `Ignoring ${invalidCertificatePaths.length} saved Samsung signing identit${invalidCertificatePaths.length === 1 ? "y" : "ies"} with an invalid certificate chain; a new certificate will be created.`
+    });
+  }
   if (candidates.length > 0) {
     emit(event, {
       type: "info",
