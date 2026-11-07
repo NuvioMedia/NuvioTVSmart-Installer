@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("installer", {
   getLgDevices: () => ipcRenderer.invoke("installer:getLgDevices"),
   deleteLgDevice: (deviceName) => ipcRenderer.invoke("installer:deleteLgDevice", deviceName),
   onLog: (callback) => ipcRenderer.on("installer:log", (event, payload) => callback(payload)),
+  startSamsungLogs: (ip) => ipcRenderer.invoke("installer:startSamsungLogs", ip),
+  saveText: (text, defaultName) => ipcRenderer.invoke("installer:saveText", text, defaultName),
   copyText: (text) => ipcRenderer.invoke("installer:copyText", text),
   selectFile: () => ipcRenderer.invoke("installer:selectFile")
 });

@@ -2340,6 +2340,50 @@ async function launchSamsungApp(event, transport, identifiers) {
   throwIfSamsungOutputFailed(output, "Samsung app launch failed");
 }
 
+function parseSamsungDebugPort(output) {
+  const match = String(output || "").match(/port\s*:\s*(\d+)/i);
+  return match ? Number(match[1]) : 0;
+}
+
+// Same approach as TizenBrew/app2samsung: launch in debug mode, then attach to the web inspector over CDP.
+async function startSamsungLogCapture(event, ip) {
+  const configuredIds = tizenIdentifierCandidates(config.tizen.appId, config.tizen.packageId, config.tizen.appIds);
+  const transport = await connectSamsungTransport(event, ip);
+  try {
+    const installedApp = await findSamsungInstalledApp(event, transport, configuredIds);
+    const appId = installedApp?.app_id || installedApp?.app_tizen_id || tizenIdentifierCandidates(configuredIds)[0];
+    if (!appId) {
+      throw new Error("Samsung app was not found. Install Nuvio first.");
+    }
+    // Tizen 3.x expects an extra argument after the app id.
+    const isTizen3 = compareTizenVersions(await readSamsungPlatformVersion(event, transport), "4.0") === -1;
+    const args = ["0", "debug", appId, ...(isTizen3 ? ["0"] : [])];
+    const output = await runSamsungShell(event, transport, args, { timeoutMs: 30000, completeWhen: /port\s*:\s*\d+/i });
+    const port = parseSamsungDebugPort(output);
+    if (!port) {
+      throw new Error(`Samsung TV did not open a debug port. Check that Host PC IP on the TV matches this computer. Output: ${output.trim() || "(empty)"}`);
+    }
+    emit(event, { type: "info", text: `Nuvio started in debug mode on port ${port}.` });
+
+    let lastError = null;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        const response = await fetch(`http://${ip}:${port}/json`, { signal: AbortSignal.timeout(3000) });
+        const targets = await response.json();
+        const target = targets.find((item) => item.webSocketDebuggerUrl) || {};
+        const pagePath = new URL(target.webSocketDebuggerUrl).pathname;
+        return { ok: true, wsUrl: `ws://${ip}:${port}${pagePath}` };
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    throw new Error(`Unable to reach the app inspector on ${ip}:${port}: ${lastError?.message || lastError}`);
+  } finally {
+    closeSamsungTransport(transport);
+  }
+}
+
 async function runSamsung(event, action, options) {
   const ip = requireValue(options.ip, "IP Samsung TV");
   const configuredIds = tizenIdentifierCandidates(config.tizen.appId, config.tizen.packageId, config.tizen.appIds);
@@ -2550,6 +2594,25 @@ ipcMain.handle("installer:deleteLgDevice", async (event, deviceName) => {
 
   await deleteLgDevice(event, normalizedName);
   return { ok: true };
+});
+
+ipcMain.handle("installer:startSamsungLogs", async (event, ip) => {
+  try {
+    return await startSamsungLogCapture(event, requireValue(ip, "IP Samsung TV"));
+  } catch (error) {
+    emit(event, { type: "error", text: error.message || String(error) });
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle("installer:saveText", async (event, text, defaultName) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    defaultPath: path.join(app.getPath("downloads"), defaultName || "nuvio-log.txt"),
+    filters: [{ name: "Text", extensions: ["txt"] }]
+  });
+  if (canceled || !filePath) return null;
+  await fsp.writeFile(filePath, String(text || ""), "utf8");
+  return filePath;
 });
 
 ipcMain.handle("installer:copyText", async (_event, text) => {

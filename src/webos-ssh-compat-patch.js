@@ -1,5 +1,6 @@
 const Module = require("node:module");
 const util = require("node:util");
+require("./webos-key-download-diagnostics");
 
 const originalLoad = Module._load;
 

@@ -254,6 +254,7 @@ function setupInstallerUI() {
   
   // Custom Tizen options
   samsungCertOptions.classList.toggle('hidden', isSimple || !(isSamsung || isMulti));
+  document.getElementById('btn-logs').classList.toggle('hidden', !isSamsung);
 }
 
 function renderHostPcIpToggle() {
@@ -433,3 +434,81 @@ async function runAction(action) {
 btnInstall.addEventListener('click', () => runAction('install'));
 document.getElementById('btn-launch').addEventListener('click', () => runAction('launch'));
 document.getElementById('btn-uninstall').addEventListener('click', () => runAction('uninstall'));
+
+// Samsung app log capture over the web inspector (CDP).
+const btnLogs = document.getElementById('btn-logs');
+let logSocket = null;
+let capturedLines = [];
+
+function formatCdpValue(arg) {
+  if (arg.value !== undefined) return typeof arg.value === 'string' ? arg.value : JSON.stringify(arg.value);
+  return arg.description || arg.unserializableValue || arg.type;
+}
+
+function captureLine(text, type = 'info') {
+  const line = `${new Date().toISOString()} ${text}`;
+  capturedLines.push(line);
+  appendLog(line, type);
+}
+
+async function finishLogCapture() {
+  btnLogs.innerText = 'Logs';
+  btnLogs.disabled = false;
+  logSocket = null;
+  if (!capturedLines.length) return;
+  const text = capturedLines.join('\n') + '\n';
+  capturedLines = [];
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const saved = await window.installer.saveText(text, `nuvio-samsung-log-${stamp}.txt`);
+  appendLog(saved ? `App log saved to ${saved}` : 'App log not saved.', saved ? 'success' : 'info');
+}
+
+btnLogs.addEventListener('click', async () => {
+  if (logSocket) {
+    logSocket.close();
+    return;
+  }
+  const ip = document.getElementById('ip').value.trim();
+  if (!ip) {
+    appendLog("Error: TV IP Address is required for Samsung.", "error");
+    return;
+  }
+  btnLogs.disabled = true;
+  appendLog('Starting Nuvio in debug mode to record app logs...', 'info');
+  const res = await window.installer.startSamsungLogs(ip);
+  if (!res?.ok) {
+    btnLogs.disabled = false;
+    appendLog(`Failed: ${res?.error || 'unknown error'}`, 'error');
+    return;
+  }
+
+  let id = 0;
+  const socket = new WebSocket(res.wsUrl);
+  logSocket = socket;
+  socket.onopen = () => {
+    ['Runtime.enable', 'Log.enable', 'Runtime.runIfWaitingForDebugger']
+      .forEach((method) => socket.send(JSON.stringify({ id: ++id, method })));
+    btnLogs.innerText = 'Stop & save';
+    btnLogs.disabled = false;
+    captureLine('[installer] Recording started. Use the app on the TV, then press "Stop & save".', 'success');
+  };
+  socket.onmessage = (message) => {
+    let data;
+    try { data = JSON.parse(message.data); } catch { return; }
+    const p = data.params || {};
+    if (data.method === 'Runtime.consoleAPICalled') {
+      captureLine(`[console.${p.type}] ${(p.args || []).map(formatCdpValue).join(' ')}`, p.type === 'error' ? 'error' : 'info');
+    } else if (data.method === 'Runtime.exceptionThrown') {
+      const d = p.exceptionDetails || {};
+      captureLine(`[exception] ${d.exception?.description || d.text} (${d.url || ''}:${d.lineNumber ?? ''})`, 'error');
+    } else if (data.method === 'Log.entryAdded') {
+      const e = p.entry || {};
+      captureLine(`[${e.source}.${e.level}] ${e.text}${e.url ? ` (${e.url})` : ''}`, e.level === 'error' ? 'error' : 'info');
+    }
+  };
+  socket.onerror = () => captureLine('[installer] Inspector connection error.', 'error');
+  socket.onclose = () => {
+    captureLine('[installer] Recording stopped.', 'info');
+    finishLogCapture();
+  };
+});
