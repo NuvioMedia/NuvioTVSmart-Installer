@@ -2340,8 +2340,10 @@ async function launchSamsungApp(event, transport, identifiers) {
   throwIfSamsungOutputFailed(output, "Samsung app launch failed");
 }
 
+// The TV answers with a "debug" line whose port follows the first colon (same parsing as TizenBrew).
 function parseSamsungDebugPort(output) {
-  const match = String(output || "").match(/port\s*:\s*(\d+)/i);
+  const text = String(output || "");
+  const match = /debug/i.test(text) && text.match(/:\s*(\d{2,5})/);
   return match ? Number(match[1]) : 0;
 }
 
@@ -2351,14 +2353,16 @@ async function startSamsungLogCapture(event, ip) {
   const transport = await connectSamsungTransport(event, ip);
   try {
     const installedApp = await findSamsungInstalledApp(event, transport, configuredIds);
-    const appId = installedApp?.app_id || installedApp?.app_tizen_id || tizenIdentifierCandidates(configuredIds)[0];
+    // `debug` needs the full "<packageId>.<name>" app id; the bare package id that was_execute accepts makes it hang.
+    const appId = tizenIdentifierCandidates(installedApp?.app_tizen_id, installedApp?.app_id, configuredIds)
+      .find((id) => id.includes("."));
     if (!appId) {
       throw new Error("Samsung app was not found. Install Nuvio first.");
     }
     // Tizen 3.x expects an extra argument after the app id.
     const isTizen3 = compareTizenVersions(await readSamsungPlatformVersion(event, transport), "4.0") === -1;
     const args = ["0", "debug", appId, ...(isTizen3 ? ["0"] : [])];
-    const output = await runSamsungShell(event, transport, args, { timeoutMs: 30000, completeWhen: /port\s*:\s*\d+/i });
+    const output = await runSamsungShell(event, transport, args, { timeoutMs: 30000, completeWhen: /debug[\s\S]*:\s*\d{2,5}/i });
     const port = parseSamsungDebugPort(output);
     if (!port) {
       throw new Error(`Samsung TV did not open a debug port. Check that Host PC IP on the TV matches this computer. Output: ${output.trim() || "(empty)"}`);
