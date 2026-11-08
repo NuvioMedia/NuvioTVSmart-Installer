@@ -1266,8 +1266,29 @@ async function getSamsungCertificateExtensionRepository() {
   return repository;
 }
 
+const samsungCertificateAuthorityDownloadAttempts = 3;
+
 async function downloadSamsungCertificateAuthorities(event, repository) {
   emit(event, { type: "info", text: "The cached Samsung certificate authorities are out of date; refreshing them before signing." });
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await downloadAndExtractSamsungCertificateAuthorities(event, repository);
+      return;
+    } catch (error) {
+      // A corrupted or truncated download surfaces as a JSZip error such as
+      // "Bug : uncompressed data size mismatch"; a fresh download usually succeeds.
+      if (attempt >= samsungCertificateAuthorityDownloadAttempts) {
+        throw error;
+      }
+      emit(event, {
+        type: "info",
+        text: `Samsung certificate authorities download was unreadable (${error?.message || String(error)}); retrying (${attempt + 1}/${samsungCertificateAuthorityDownloadAttempts}).`
+      });
+    }
+  }
+}
+
+async function downloadAndExtractSamsungCertificateAuthorities(event, repository) {
   const archivePath = path.join(app.getPath("temp"), `nuvio-samsung-certificate-extension-${Date.now()}.zip`);
   try {
     await downloadFile(event, repository, archivePath, {
@@ -1288,6 +1309,11 @@ async function downloadSamsungCertificateAuthorities(event, repository) {
     if (certificateFiles.length === 0) {
       throw new Error("The Samsung certificate extension did not contain certificate authorities.");
     }
+    // Read every certificate before touching the cache so a bad archive cannot leave it half-replaced.
+    const certificateContents = new Map();
+    for (const certificateFile of certificateFiles) {
+      certificateContents.set(certificateFile, await jarZip.files[certificateFile].async("nodebuffer"));
+    }
 
     await fsp.mkdir(samsungCertificateAuthorityDirectory, { recursive: true });
     await fsp.rm(samsungCertificateAuthorityMarker, { force: true });
@@ -1298,7 +1324,7 @@ async function downloadSamsungCertificateAuthorities(event, repository) {
     }
     for (const certificateFile of certificateFiles) {
       const targetPath = path.join(samsungCertificateAuthorityDirectory, path.basename(certificateFile));
-      await fsp.writeFile(targetPath, await jarZip.files[certificateFile].async("nodebuffer"));
+      await fsp.writeFile(targetPath, certificateContents.get(certificateFile));
     }
     await fsp.writeFile(samsungCertificateAuthorityMarker, repository);
   } finally {
