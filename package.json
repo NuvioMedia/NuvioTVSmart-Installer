@@ -5,13 +5,24 @@
   "description": "Desktop installer for Nuvio TV webOS and Samsung Tizen builds.",
   "author": "NuvioMedia",
   "main": "src/main.js",
+  "bin": {
+    "nuvio-tv-installer": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "files": [
+    "src/**/*",
+    "installer.config.json"
+  ],
   "scripts": {
     "start": "electron .",
-    "test": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/renderer.js && node --check src/samsung-certificate-chain.js && node --check src/webos-ssh-compat-patch.js && node --check src/webos-key-download-diagnostics.js && node --test test/samsung-certificate-chain.test.cjs",
+    "test": "node --check src/main.js && node --check src/cli.js && node --check src/electron-shim.js && node --check src/preload.js && node --check src/renderer/renderer.js && node --check src/samsung-certificate-chain.js && node --check src/webos-ssh-compat-patch.js && node --check src/webos-key-download-diagnostics.js && node --test test/samsung-certificate-chain.test.cjs test/cli.test.cjs",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
-    "dist:linux": "electron-builder --linux --publish never"
+    "dist:linux": "electron-builder --linux --publish never",
+    "cli": "node src/cli.js"
   },
   "dependencies": {
     "@webos-tools/cli": "^3.2.4",

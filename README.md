@@ -96,6 +96,30 @@ ares-launch
 
 If a usable profile already exists, the installer can reuse it. Entering a new IP for an existing device name updates that profile before installation.
 
+## Command line
+
+The same install logic is available as a headless, script-friendly CLI on Windows, macOS and Linux (including servers without a display). It needs Node.js 18.17 or newer:
+
+```bash
+npx github:NuvioMedia/NuvioTVSmart-Installer samsung install --ip 192.168.0.15
+npx github:NuvioMedia/NuvioTVSmart-Installer lg install --ip 192.168.0.13 --device-name lg --passphrase ABC123
+```
+
+Commands:
+
+```text
+nuvio-tv-installer <samsung|lg> <install|launch|uninstall> --ip <TV IP> [options]
+nuvio-tv-installer <samsung|lg> releases
+```
+
+`install` also updates an existing installation. Useful options: `--release <tag>` (default: latest), `--file <path>` for a local `.wgt`/`.ipk`, `--json` for one JSON object per log line. Run with `--help` for the full list. The exit code is `0` on success and `1` on failure.
+
+From a clone, use `npm ci --omit=dev` and then `npm run cli -- samsung install --ip ...`. The packaged desktop app can run it too: `ELECTRON_RUN_AS_NODE=1 <installer executable> <resources>/app.asar/src/cli.js ...`.
+
+The CLI uses the same data folder as the desktop app (downloaded packages, Samsung certificates), so a TV already set up in the app works straight away. Set `NUVIO_INSTALLER_DATA_DIR` to use another folder.
+
+Samsung certificate: the first install on a new TV creates a certificate through a Samsung account sign-in. The CLI prints the sign-in URL; open it in a browser on the same computer, because Samsung redirects to `http://localhost:4794`. On a headless machine, forward the port first (for example `ssh -L 4794:localhost:4794 <server>`) and open the URL on your own computer. After that, the saved certificate is reused and installs and updates run without any interaction. To skip the sign-in, pass an existing certificate with `--author-cert`, `--distributor-cert` and `--cert-password` (or `NUVIO_CERT_PASSWORD`), or a Tizen Studio profile with `--cert-profile`.
+
 ## TV package contract
 
 The GitHub release workflow publishes the installer input packages together:
