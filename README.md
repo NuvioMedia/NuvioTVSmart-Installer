@@ -98,12 +98,14 @@ If a usable profile already exists, the installer can reuse it. Entering a new I
 
 ## Command line
 
-The same install logic is available as a headless, script-friendly CLI on Windows, macOS and Linux (including servers without a display). It needs Node.js 18.17 or newer:
+The same install logic is available as a headless, script-friendly CLI on Windows, macOS and Linux (including servers without a display). It needs Node.js 18.17 or newer. Every Nuvio TV release ships it as `NuvioTVSmart-Installer-CLI.tgz`:
 
 ```bash
-npx github:NuvioMedia/NuvioTVSmart-Installer samsung install --ip 192.168.0.15
-npx github:NuvioMedia/NuvioTVSmart-Installer lg install --ip 192.168.0.13 --device-name lg --passphrase ABC123
+npx --yes --package=https://github.com/NuvioMedia/NuvioTVSmart/releases/latest/download/NuvioTVSmart-Installer-CLI.tgz nuvio-tv-installer samsung install --ip 192.168.0.15
+npx --yes --package=https://github.com/NuvioMedia/NuvioTVSmart/releases/latest/download/NuvioTVSmart-Installer-CLI.tgz nuvio-tv-installer lg install --ip 192.168.0.13 --device-name lg --passphrase ABC123
 ```
+
+To install it once instead: `npm install -g <that .tgz URL or file>`, then run `nuvio-tv-installer ...`. The latest source also works directly: `npx github:NuvioMedia/NuvioTVSmart-Installer ...`.
 
 Commands:
 
@@ -114,7 +116,7 @@ nuvio-tv-installer <samsung|lg> releases
 
 `install` also updates an existing installation. Useful options: `--release <tag>` (default: latest), `--file <path>` for a local `.wgt`/`.ipk`, `--json` for one JSON object per log line. Run with `--help` for the full list. The exit code is `0` on success and `1` on failure.
 
-From a clone, use `npm ci --omit=dev` and then `npm run cli -- samsung install --ip ...`. The packaged desktop app can run it too: `ELECTRON_RUN_AS_NODE=1 <installer executable> <resources>/app.asar/src/cli.js ...`.
+From a clone: `npm ci --omit=dev`, then `npm run cli -- samsung install --ip ...`. The packaged desktop app on macOS and Linux can run it too, for example `ELECTRON_RUN_AS_NODE=1 "Nuvio TV Installer.app/Contents/MacOS/Nuvio TV Installer" "Nuvio TV Installer.app/Contents/Resources/app.asar/src/cli.js" --help`.
 
 The CLI uses the same data folder as the desktop app (downloaded packages, Samsung certificates), so a TV already set up in the app works straight away. Set `NUVIO_INSTALLER_DATA_DIR` to use another folder.
 
