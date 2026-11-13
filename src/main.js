@@ -1,5 +1,7 @@
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require("electron");
+// Outside the Electron main process (plain node or ELECTRON_RUN_AS_NODE) require("electron") is not the API.
+const electronApi = process.versions.electron && process.type === "browser" ? require("electron") : require("./electron-shim");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = electronApi;
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -2623,3 +2625,5 @@ ipcMain.handle("installer:copyText", async (_event, text) => {
   clipboard.writeText(String(text || ""));
   return true;
 });
+
+module.exports = { runSamsung, runLg, getRecentReleases, listRegisteredLgDevices, migrateLegacySamsungCertificateStore };
