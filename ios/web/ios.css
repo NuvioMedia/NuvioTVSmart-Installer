@@ -1,0 +1,19 @@
+/* Phone layout only: the desktop layout needs ~1000px. Same colors, fonts and components. */
+html, body { -webkit-text-size-adjust: 100%; }
+body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+input, select { font-size: 16px !important; }
+@media (max-width: 899px) {
+  body { overflow: hidden; }
+  .nav-back { top: calc(env(safe-area-inset-top) + 12px); left: 16px; padding: 8px 14px 8px 12px; }
+  .app-branding { top: calc(env(safe-area-inset-top) + 64px); }
+  .view { top: 104px; height: calc(100% - 104px); justify-content: flex-start; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 0 32px; }
+  h1 { font-size: 30px; padding: 0 16px; }
+  p.subtitle { font-size: 16px; margin-bottom: 28px; padding: 0 16px; }
+  .selection-grid { flex-direction: column; padding: 0 16px; gap: 16px; }
+  .installer-layout { grid-template-columns: minmax(0, 1fr); width: 100%; height: auto; padding: 0 16px 16px; gap: 20px; }
+  .installer-sidebar { height: auto; overflow: visible; padding: 24px; min-width: 0; }
+  .installer-header { gap: 12px; }
+  .file-selector input { min-width: 0; flex: 1; }
+  .btn-group { flex-wrap: wrap; }
+  .log-panel { height: 420px; min-width: 0; }
+}

@@ -19,6 +19,19 @@ Download a packaged build from the [installer releases](https://github.com/Nuvio
 - Windows portable executable
 - macOS application
 - Linux AppImage
+- iOS/iPadOS app (`NuvioTVSmart-Installer-iOS-<version>.ipa`, unsigned)
+
+### iPhone and iPad
+
+The iOS app has the same screens and actions as the desktop installer. The phone must be on the same network as the TV. For Samsung, enter the phone IP as `Host PC IP`.
+
+Add this source to AltStore or SideStore to install it and get updates:
+
+```
+https://github.com/NuvioMedia/NuvioTVSmart/releases/latest/download/NuvioTVSmart-Installer-AltStore.json
+```
+
+The IPA can also be sideloaded with any tool that signs it with your Apple ID. To build it on a Mac with Xcode and `xcodegen`, run `npm ci` and then `ios/build-ipa.sh <version> dist/NuvioTVSmart-Installer-iOS-<version>.ipa`.
 
 The installer reads the release configuration from `installer.config.json`, downloads the matching `.wgt` or `.ipk` asset from the Nuvio TV repository, and provides these actions:
 
