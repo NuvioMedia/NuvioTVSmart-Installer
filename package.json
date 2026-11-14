@@ -37,7 +37,7 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "space.nuvio.webtvinstaller",
+    "appId": "com.nuvio.installer",
     "productName": "Nuvio TV Installer",
     "icon": "icon.png",
     "asar": true,
