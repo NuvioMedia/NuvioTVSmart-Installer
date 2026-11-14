@@ -1,4 +1,4 @@
-package space.nuvio.webtvinstaller
+package com.nuvio.installer
 
 import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.ChannelSftp

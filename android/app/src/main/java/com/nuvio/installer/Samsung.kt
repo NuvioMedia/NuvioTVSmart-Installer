@@ -1,4 +1,4 @@
-package space.nuvio.webtvinstaller
+package com.nuvio.installer
 
 import kotlinx.coroutines.delay
 import java.io.File

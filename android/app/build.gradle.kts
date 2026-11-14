@@ -11,11 +11,11 @@ val appVersionCode = appVersionName.split('.', '-').mapNotNull { it.toIntOrNull(
 }
 
 android {
-    namespace = "space.nuvio.webtvinstaller"
+    namespace = "com.nuvio.installer"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "space.nuvio.webtvinstaller"
+        applicationId = "com.nuvio.installer"
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode

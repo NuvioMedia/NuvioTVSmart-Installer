@@ -5,7 +5,7 @@ import Network
 final class SamsungAuthServer {
     static let authUrl = "https://account.samsung.com/mobile/account/check.do?serviceID=v285zxnl3h&actionID=StartOAuth2&accessToken=Y&redirect_uri=http://localhost:4794/signin/callback"
 
-    private let queue = DispatchQueue(label: "space.nuvio.samsung-auth")
+    private let queue = DispatchQueue(label: "com.nuvio.installer.samsung-auth")
     private var listener: NWListener?
     private var settled = false
     private var continuation: CheckedContinuation<[String: String], Error>?
