@@ -123,11 +123,11 @@ To install it once instead: `npm install -g <that .tgz URL or file>`, then run `
 Commands:
 
 ```text
-nuvio-tv-installer <samsung|lg> <install|launch|uninstall> --ip <TV IP> [options]
+nuvio-tv-installer <samsung|lg> <install|update|launch|uninstall> --ip <TV IP> [options]
 nuvio-tv-installer <samsung|lg> releases
 ```
 
-`install` also updates an existing installation. Useful options: `--release <tag>` (default: latest), `--file <path>` for a local `.wgt`/`.ipk`, `--json` for one JSON object per log line. Run with `--help` for the full list. The exit code is `0` on success and `1` on failure.
+`install` always (re)installs. `update` checks the version on the TV first and installs only when the selected release is newer or the app is missing, so it is safe to run on a schedule. Useful options: `--release <tag>` (default: latest), `--file <path>` for a local `.wgt`/`.ipk` (`install` only), `--json` for one JSON object per log line. Run with `--help` for the full list. The exit code is `0` on success and `1` on failure.
 
 From a clone: `npm ci --omit=dev`, then `npm run cli -- samsung install --ip ...`. The packaged desktop app on macOS and Linux can run it too, for example `ELECTRON_RUN_AS_NODE=1 "Nuvio TV Installer.app/Contents/MacOS/Nuvio TV Installer" "Nuvio TV Installer.app/Contents/Resources/app.asar/src/cli.js" --help`.
 

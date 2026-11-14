@@ -6,13 +6,13 @@ const { parseArgs } = require("node:util");
 const usage = `Nuvio TV Installer CLI
 
 Usage:
-  nuvio-tv-installer <samsung|lg> <install|launch|uninstall> --ip <TV IP> [options]
+  nuvio-tv-installer <samsung|lg> <install|update|launch|uninstall> --ip <TV IP> [options]
   nuvio-tv-installer <samsung|lg> releases
 
 Options:
-  --ip <address>             TV IP address (required for install/launch/uninstall)
+  --ip <address>             TV IP address (required for install/update/launch/uninstall)
   --release <tag|id>         Release to install (default: latest)
-  --file <path>              Install a local .wgt/.ipk instead of downloading
+  --file <path>              Install a local .wgt/.ipk instead of downloading (install only)
   --device-name <name>       LG: webOS device name
   --passphrase <code>        LG: Developer Mode passphrase (first install only)
   --cert-profile <name>      Samsung: use an existing Tizen Studio security profile
@@ -22,6 +22,7 @@ Options:
   --json                     Print one JSON object per log line
   -h, --help                 Show this help
 
+"install" always reinstalls; "update" installs only when the TV has an older version or none.
 Exit code is 0 on success and 1 on failure.
 Data (packages, Samsung certificates) is shared with the desktop app; override with NUVIO_INSTALLER_DATA_DIR.`;
 
@@ -86,7 +87,7 @@ async function main(argv) {
 
   const [platform, action] = positionals;
   if (!["samsung", "lg"].includes(platform)) fail(`Unknown platform "${platform}".`);
-  if (!["install", "launch", "uninstall", "releases"].includes(action)) fail(`Unknown action "${action}".`);
+  if (!["install", "update", "launch", "uninstall", "releases"].includes(action)) fail(`Unknown action "${action}".`);
 
   const installer = require("./main.js");
 
@@ -98,6 +99,7 @@ async function main(argv) {
   }
 
   if (!values.ip) fail("--ip is required.");
+  if (action === "update" && values.file) fail("--file works with install only; update compares against GitHub releases.");
 
   const certPassword = values["cert-password"] || process.env.NUVIO_CERT_PASSWORD || "";
   const manualCert = Boolean(values["cert-profile"] || values["author-cert"] || values["distributor-cert"]);
