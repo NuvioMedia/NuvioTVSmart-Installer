@@ -20,6 +20,7 @@ Download a packaged build from the [installer releases](https://github.com/Nuvio
 - macOS application
 - Linux AppImage
 - iOS/iPadOS app (`NuvioTVSmart-Installer-iOS-<version>.ipa`, unsigned)
+- Android app (`NuvioTVSmart-Installer-Android-<version>.apk`)
 
 ### iPhone and iPad
 
@@ -32,6 +33,12 @@ https://github.com/NuvioMedia/NuvioTVSmart/releases/latest/download/NuvioTVSmart
 ```
 
 The IPA can also be sideloaded with any tool that signs it with your Apple ID. To build it on a Mac with Xcode and `xcodegen`, run `npm ci` and then `ios/build-ipa.sh <version> dist/NuvioTVSmart-Installer-iOS-<version>.ipa`.
+
+### Android
+
+The Android app has the same screens and actions as the desktop installer. Install the APK on a phone or tablet on the same network as the TV. For Samsung, enter the phone IP as `Host PC IP`.
+
+To build it, run `npm ci` and then `android/build-apk.sh <version> dist/NuvioTVSmart-Installer-Android-<version>.apk` (JDK 17 and the Android SDK). Release builds are signed with the key given in `NUVIO_ANDROID_KEYSTORE`, `NUVIO_ANDROID_KEYSTORE_PASSWORD`, `NUVIO_ANDROID_KEY_ALIAS` and `NUVIO_ANDROID_KEY_PASSWORD`; set `NUVIO_ANDROID_DEBUG_SIGNING=1` for a local test build.
 
 The installer reads the release configuration from `installer.config.json`, downloads the matching `.wgt` or `.ipk` asset from the Nuvio TV repository, and provides these actions:
 
