@@ -1,4 +1,4 @@
-package space.nuvio.webtvinstaller
+package com.nuvio.installer
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout

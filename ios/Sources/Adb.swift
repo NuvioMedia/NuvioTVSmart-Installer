@@ -18,7 +18,7 @@ final class AdbClient {
         init(localId: UInt32) { self.localId = localId }
     }
 
-    let queue = DispatchQueue(label: "space.nuvio.adb")
+    let queue = DispatchQueue(label: "com.nuvio.installer.adb")
     private let connection: NWConnection
     private var tcpConnected = false
     private var handshakeDone = false

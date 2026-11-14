@@ -1,4 +1,4 @@
-package space.nuvio.webtvinstaller
+package com.nuvio.installer
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog

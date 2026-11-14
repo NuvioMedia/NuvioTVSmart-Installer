@@ -26,7 +26,7 @@ const source = {
   tintColor: "#0D0D0D",
   apps: [{
     name: "Nuvio TV Installer",
-    bundleIdentifier: "space.nuvio.webtvinstaller",
+    bundleIdentifier: "com.nuvio.installer",
     developerName: "NuvioMedia",
     subtitle: "Install Nuvio TV on Samsung and LG TVs",
     localizedDescription: description,
