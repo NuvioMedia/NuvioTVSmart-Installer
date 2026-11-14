@@ -389,7 +389,9 @@ struct Samsung {
             throw InstallerError("Samsung certificate extension info failed: \(resp.statusCode) \(HTTP.statusText(resp.statusCode))")
         }
         let xml = String(decoding: data, as: UTF8.self)
-        for block in xml.components(separatedBy: "<extension>").dropFirst() {
+        // <extension id="..."> carries attributes, so split on the tag pattern.
+        let blocks = xml.replacingRegex(#"<extension\b[^>]*>"#, with: "\u{1}").components(separatedBy: "\u{1}")
+        for block in blocks.dropFirst() {
             let name = block.firstGroup(#"<name>([\s\S]*?)</name>"#)?.trimmed
             if name == "Samsung Certificate Extension", let repo = block.firstGroup(#"<repository>([\s\S]*?)</repository>"#)?.trimmed, !repo.isEmpty {
                 return repo

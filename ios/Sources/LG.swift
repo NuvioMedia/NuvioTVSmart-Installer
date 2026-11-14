@@ -246,7 +246,10 @@ enum LG {
                 host: profile.host, port: 9922,
                 authenticationMethod: .rsa(username: "prisoner", privateKey: key),
                 hostKeyValidator: .acceptAnything(), // same as ares: TV host keys are not pinned
-                reconnect: .never, connectTimeout: .seconds(20))
+                reconnect: .never,
+                // webOS dropbear builds use RSA host keys and, on older TVs, DH group14 and AES-CTR.
+                algorithms: .all,
+                connectTimeout: .seconds(20))
         } catch {
             let text = errorMessage(error)
             let auth = text.matches("auth|passphrase|permission") || String(describing: error).matches("auth")
@@ -321,7 +324,8 @@ enum LG {
                 offset = end
             }
         }
-        try? await sftp.close()
+        // The file is already written and closed; some SFTP servers never acknowledge the channel close.
+        Task { try? await sftp.close() }
 
         // Same transfer check as ares-install: md5 of the last 200 bytes.
         let tail = ipk.suffix(200)
