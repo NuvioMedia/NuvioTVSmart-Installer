@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TVs are reached over plain HTTP on the local network (webOS key server, Samsung inspector, login callback). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
