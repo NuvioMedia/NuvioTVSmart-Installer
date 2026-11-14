@@ -50,7 +50,7 @@ let migratedLegacySamsungCertificateCount = 0;
 
 app.setName(appDisplayName);
 if (isWindows) {
-  app.setAppUserModelId("space.nuvio.webtvinstaller");
+  app.setAppUserModelId("com.nuvio.installer");
 }
 
 function createWindow() {
