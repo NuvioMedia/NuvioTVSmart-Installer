@@ -3,7 +3,7 @@
   <img src="logo/nuvio_wordmark.png" alt="Nuvio" width="300" />
 
   <p>
-    The desktop companion for installing Nuvio TV on Samsung Tizen and LG webOS.
+    The desktop and mobile companion for installing Nuvio TV on Samsung Tizen and LG webOS.
     <br />
     Download, sign, install, update, launch, and remove the TV app from one place.
   </p>
