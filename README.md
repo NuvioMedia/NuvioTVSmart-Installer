@@ -67,6 +67,17 @@ Before using the installer:
 
 The installer first attempts the direct Samsung Developer Mode connection. If that is unavailable, it uses `sdb` when it is installed on the computer; the `tizen` CLI can be used as a later fallback for compatible setups.
 
+`sdb` and the `tizen` CLI come with Tizen Studio. The installer finds them on `PATH` or in the default SDK location `~/tizen-studio`, so no `PATH` change is needed. On macOS the Tizen Studio download is a `.bin` file that Finder opens in TextEdit instead of running it; start it from the terminal:
+
+```bash
+cd ~/Downloads
+chmod +x web-*Tizen_Studio_*macos-64.bin
+xattr -d com.apple.quarantine web-*Tizen_Studio_*macos-64.bin  # "No such xattr" only means the file was not quarantined
+./web-*Tizen_Studio_*macos-64.bin
+```
+
+Installers: [download.tizen.org/sdk/Installer](https://download.tizen.org/sdk/Installer/). On Apple silicon, `sdb` is an Intel binary, so run `softwareupdate --install-rosetta` once.
+
 For every Samsung install or update, the installer:
 
 1. downloads the selected WGT;
