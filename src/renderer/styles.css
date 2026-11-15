@@ -566,7 +566,7 @@ input:checked + .toggle-slider:before {
   line-height: 1.6;
   color: #d1d5db;
 }
-.log-line { margin-bottom: 4px; }
+.log-line { margin-bottom: 4px; overflow-wrap: anywhere; user-select: text; }
 .log-info { color: #9ca3af; }
 .log-command { color: #60a5fa; }
 .log-success { color: #34d399; }
