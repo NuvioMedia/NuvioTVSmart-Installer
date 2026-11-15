@@ -1563,8 +1563,8 @@ function waitForSamsungAccessInfo(event) {
 
     server.listen(4794, "127.0.0.1", () => {
       const authUrl = "https://account.samsung.com/mobile/account/check.do?serviceID=v285zxnl3h&actionID=StartOAuth2&accessToken=Y&redirect_uri=http://localhost:4794/signin/callback";
-      emit(event, { type: "info", text: "Opening Samsung login. Complete sign-in in the browser, then return to the installer." });
-      shell.openExternal(authUrl);
+      emit(event, { type: "info", text: `Opening Samsung login. Complete sign-in in the browser, then return to the installer. If no browser opens, copy this link into a browser on this computer:\n${authUrl}` });
+      shell.openExternal(authUrl).catch((error) => emit(event, { type: "warning", text: `Unable to open the browser automatically (${error.message || error}). Copy the link above into a browser on this computer.` }));
     });
   });
 }

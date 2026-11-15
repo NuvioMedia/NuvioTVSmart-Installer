@@ -28,8 +28,8 @@ const app = {
 };
 
 const shell = {
-  openExternal(url) {
-    process.stderr.write(`\nOpen this URL in a browser on this computer to continue:\n${url}\n\n`);
+  // The login URL is already printed through the install log.
+  openExternal() {
     return Promise.resolve();
   }
 };
