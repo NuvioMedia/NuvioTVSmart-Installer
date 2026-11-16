@@ -51,7 +51,7 @@ final class InstallerViewController: UIViewController, WKScriptMessageHandlerWit
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
         webView = WKWebView(frame: view.bounds, configuration: configuration)
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.translatesAutoresizingMaskIntoConstraints = false
         webView.isOpaque = false
         webView.backgroundColor = view.backgroundColor
         webView.scrollView.backgroundColor = view.backgroundColor
@@ -60,6 +60,13 @@ final class InstallerViewController: UIViewController, WKScriptMessageHandlerWit
         webView.scrollView.isScrollEnabled = false // the page is a fixed viewport like the desktop window; panels scroll inside
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         view.addSubview(webView)
+        // The fixed header sits at the top of the page, so keep the page inside the status bar/home indicator areas.
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
+        ])
         #if DEBUG
         // Simulator test hook: `simctl launch <udid> <bundle> -nuvioTestScript /path/script.js`
         if let i = CommandLine.arguments.firstIndex(of: "-nuvioTestScript"), i + 1 < CommandLine.arguments.count,
