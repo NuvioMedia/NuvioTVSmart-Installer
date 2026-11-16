@@ -417,6 +417,48 @@ async function resolveReleaseAsset(event, platform, releaseId) {
   return targetPath;
 }
 
+async function getReleaseVersion(releaseId) {
+  const normalizedReleaseId = String(releaseId || "").trim();
+  if (normalizedReleaseId && !/^\d+$/.test(normalizedReleaseId)) {
+    throw new Error("Invalid GitHub release selection.");
+  }
+  const release = await fetchJson(normalizedReleaseId
+    ? `https://api.github.com/repos/${config.githubRepo}/releases/${normalizedReleaseId}`
+    : `https://api.github.com/repos/${config.githubRepo}/releases/latest`);
+  return String(release.tag_name || "").replace(/^v/i, "");
+}
+
+// Resolves to true when the TV already has the target release or a newer one.
+async function isAlreadyUpToDate(event, installedVersion, releaseId) {
+  if (!installedVersion) {
+    emit(event, { type: "info", text: "Nuvio TV is not installed on this TV; installing it." });
+    return false;
+  }
+  const targetVersion = await getReleaseVersion(releaseId);
+  if (compareTizenVersions(installedVersion, targetVersion) >= 0) {
+    emit(event, { type: "info", text: `Nuvio TV ${installedVersion} is already installed (release ${targetVersion}); nothing to update.` });
+    return true;
+  }
+  emit(event, { type: "info", text: `Updating Nuvio TV from ${installedVersion} to ${targetVersion}.` });
+  return false;
+}
+
+function parseAresListFullVersion(output, appId) {
+  let currentId = "";
+  for (const line of String(output || "").split(/\r?\n/)) {
+    const idMatch = line.match(/^id\s*:\s*(\S+)/);
+    if (idMatch) {
+      currentId = idMatch[1];
+      continue;
+    }
+    const versionMatch = line.match(/^version\s*:\s*(\S+)/);
+    if (versionMatch && currentId === appId) {
+      return versionMatch[1];
+    }
+  }
+  return "";
+}
+
 function requireValue(value, label) {
   const normalized = String(value || "").trim();
   if (!normalized) {
@@ -451,6 +493,13 @@ async function runLg(event, action, options) {
   if (action === "uninstall") {
     await runCommand(event, aresInstall, ["--device", device, "--remove", config.webos.appId]);
     return;
+  }
+
+  if (action === "update") {
+    const { stdout } = await captureCommand(event, aresInstall, ["--device", device, "--listfull"], { logOutput: false });
+    if (await isAlreadyUpToDate(event, parseAresListFullVersion(stdout, config.webos.appId), options.releaseId)) {
+      return;
+    }
   }
 
   const packagePath = options.packagePath || await resolveReleaseAsset(event, "webos", options.releaseId);
@@ -2408,6 +2457,13 @@ async function runSamsung(event, action, options) {
       return;
     }
 
+    if (action === "update") {
+      const installedApp = await findSamsungInstalledApp(event, transport, configuredIds);
+      if (await isAlreadyUpToDate(event, String(installedApp?.app_version || "").trim(), options.releaseId)) {
+        return;
+      }
+    }
+
     const packagePath = options.packagePath || await resolveReleaseAsset(event, "tizen", options.releaseId);
     const preparedPackage = await prepareSamsungPackage(event, transport, packagePath, options);
     let installPackagePath = "";
@@ -2626,4 +2682,4 @@ ipcMain.handle("installer:copyText", async (_event, text) => {
   return true;
 });
 
-module.exports = { runSamsung, runLg, getRecentReleases, listRegisteredLgDevices, migrateLegacySamsungCertificateStore };
+module.exports = { runSamsung, runLg, getRecentReleases, listRegisteredLgDevices, migrateLegacySamsungCertificateStore, parseAresListFullVersion };

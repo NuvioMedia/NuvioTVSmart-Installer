@@ -22,3 +22,10 @@ test("resolves a release tag to its id and keeps numeric ids", async () => {
   assert.equal(await resolveReleaseId(installer, "tizen", ""), "");
   await assert.rejects(resolveReleaseId(installer, "tizen", "9.9.9"));
 });
+
+test("reads the installed Nuvio version from ares-install --listfull", () => {
+  const { parseAresListFullVersion } = require("../src/main.js");
+  const output = "id : com.other.app\nversion : 9.9.9\ntype : web\nid : space.nuvio.webos\nversion : 1.4.0\ntype : web";
+  assert.equal(parseAresListFullVersion(output, "space.nuvio.webos"), "1.4.0");
+  assert.equal(parseAresListFullVersion(output, "missing.app"), "");
+});
