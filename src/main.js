@@ -41,6 +41,8 @@ const tizenPluginServicePort = 2711;
 const samsungCertificateExtensionInfoUrl = "https://download.tizen.org/sdk/tizenstudio/official/extension_info.xml";
 const samsungCertificateAuthorityDirectory = path.join(os.homedir(), "share", ".samsung-cert");
 const samsungCertificateAuthorityMarker = path.join(samsungCertificateAuthorityDirectory, ".extension");
+// Same certificate authorities as the Samsung extension, shipped so a damaged download cannot block signing.
+const samsungCertificateAuthorityFallbackDirectory = path.join(__dirname, "samsung-certificate-authorities");
 const samsungCertificateAuthorityFiles = [
   "vd_tizen_dev_author_ca.cer",
   "vd_tizen_dev_public2.crt",
@@ -330,27 +332,39 @@ async function downloadFile(event, url, targetPath, options = {}) {
   }
 
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-  const totalBytes = Number(response.headers.get("content-length")) || 0;
+  const totalBytes = response.headers.get("content-encoding") ? 0 : Number(response.headers.get("content-length")) || 0;
   let receivedBytes = 0;
   let lastReportedPercent = 0;
   const file = fs.createWriteStream(targetPath);
-  await new Promise((resolve, reject) => {
-    const body = Readable.fromWeb(response.body);
-    if (options.progressLabel) {
-      body.on("data", (chunk) => {
-        receivedBytes += chunk.length;
-        const percent = totalBytes ? Math.floor((receivedBytes / totalBytes) * 100) : 0;
-        if (percent >= lastReportedPercent + 10) {
-          lastReportedPercent = percent;
-          emit(event, { type: "info", text: `${options.progressLabel}: ${percent}%` });
-        }
-      });
+  try {
+    await new Promise((resolve, reject) => {
+      const body = Readable.fromWeb(response.body);
+      if (options.progressLabel) {
+        body.on("data", (chunk) => {
+          receivedBytes += chunk.length;
+          const percent = totalBytes ? Math.floor((receivedBytes / totalBytes) * 100) : 0;
+          if (percent >= lastReportedPercent + 10) {
+            lastReportedPercent = percent;
+            emit(event, { type: "info", text: `${options.progressLabel}: ${percent}%` });
+          }
+        });
+      }
+      body.pipe(file);
+      body.on("error", reject);
+      file.on("finish", resolve);
+      file.on("error", reject);
+    });
+
+    // A truncated body keeps the server's content-length, so a short file must never be accepted or cached.
+    const downloadedBytes = (await fsp.stat(targetPath)).size;
+    if (totalBytes && downloadedBytes !== totalBytes) {
+      throw new Error(`Download incomplete: received ${downloadedBytes} of ${totalBytes} bytes from ${url}.`);
     }
-    body.pipe(file);
-    body.on("error", reject);
-    file.on("finish", resolve);
-    file.on("error", reject);
-  });
+  } catch (error) {
+    file.destroy();
+    await fsp.rm(targetPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function releaseAssetForPlatform(release, platform) {
@@ -407,10 +421,17 @@ async function resolveReleaseAsset(event, platform, releaseId) {
   const cacheDir = path.join(app.getPath("userData"), "packages", cacheKey);
   const targetPath = path.join(cacheDir, asset.name);
 
+  const expectedBytes = Number(asset.size) || 0;
+  let cachedBytes = 0;
   try {
-    await fsp.access(targetPath, fs.constants.R_OK);
+    cachedBytes = (await fsp.stat(targetPath)).size;
+  } catch {}
+  if (cachedBytes && (!expectedBytes || cachedBytes === expectedBytes)) {
     emit(event, { type: "info", text: `Using already downloaded package: ${targetPath}` });
-  } catch {
+  } else {
+    if (cachedBytes) {
+      emit(event, { type: "info", text: `The previously downloaded package is incomplete; downloading ${asset.name} again.` });
+    }
     await downloadFile(event, asset.browser_download_url, targetPath);
   }
 
@@ -1287,7 +1308,40 @@ function getSamsungCertificateFingerprint(certificateConfig) {
 }
 
 function samsungCertificateAuthoritiesAreCached() {
-  return samsungCertificateAuthorityFiles.every((fileName) => fs.existsSync(path.join(samsungCertificateAuthorityDirectory, fileName)));
+  return samsungCertificateAuthorityFiles.every((fileName) => {
+    try {
+      const content = fs.readFileSync(path.join(samsungCertificateAuthorityDirectory, fileName), "utf8");
+      return content.includes("-----BEGIN CERTIFICATE-----") && content.includes("-----END CERTIFICATE-----");
+    } catch {
+      return false;
+    }
+  });
+}
+
+function getBundledSamsungCertificateAuthorities() {
+  const authorities = new Map();
+  for (const fileName of samsungCertificateAuthorityFiles) {
+    try {
+      authorities.set(fileName, fs.readFileSync(path.join(samsungCertificateAuthorityFallbackDirectory, fileName)));
+    } catch {
+      return null;
+    }
+  }
+  return authorities;
+}
+
+async function installSamsungCertificateAuthorities(authorities, repository) {
+  await fsp.mkdir(samsungCertificateAuthorityDirectory, { recursive: true });
+  await fsp.rm(samsungCertificateAuthorityMarker, { force: true });
+  for (const entry of await fsp.readdir(samsungCertificateAuthorityDirectory)) {
+    if (/\.(crt|cer)$/i.test(entry)) {
+      await fsp.rm(path.join(samsungCertificateAuthorityDirectory, entry), { force: true });
+    }
+  }
+  for (const [fileName, content] of authorities) {
+    await fsp.writeFile(path.join(samsungCertificateAuthorityDirectory, fileName), content);
+  }
+  await fsp.writeFile(samsungCertificateAuthorityMarker, repository);
 }
 
 async function readSamsungCertificateAuthorityMarker() {
@@ -1318,7 +1372,6 @@ async function getSamsungCertificateExtensionRepository() {
 }
 
 async function downloadSamsungCertificateAuthorities(event, repository) {
-  emit(event, { type: "info", text: "The cached Samsung certificate authorities are out of date; refreshing them before signing." });
   const archivePath = path.join(app.getPath("temp"), `nuvio-samsung-certificate-extension-${Date.now()}.zip`);
   try {
     await downloadFile(event, repository, archivePath, {
@@ -1340,28 +1393,23 @@ async function downloadSamsungCertificateAuthorities(event, repository) {
       throw new Error("The Samsung certificate extension did not contain certificate authorities.");
     }
 
-    await fsp.mkdir(samsungCertificateAuthorityDirectory, { recursive: true });
-    await fsp.rm(samsungCertificateAuthorityMarker, { force: true });
-    for (const entry of await fsp.readdir(samsungCertificateAuthorityDirectory)) {
-      if (/\.(crt|cer)$/i.test(entry)) {
-        await fsp.rm(path.join(samsungCertificateAuthorityDirectory, entry), { force: true });
-      }
-    }
+    const authorities = new Map();
     for (const certificateFile of certificateFiles) {
-      const targetPath = path.join(samsungCertificateAuthorityDirectory, path.basename(certificateFile));
-      await fsp.writeFile(targetPath, await jarZip.files[certificateFile].async("nodebuffer"));
+      authorities.set(path.basename(certificateFile), await jarZip.files[certificateFile].async("nodebuffer"));
     }
-    await fsp.writeFile(samsungCertificateAuthorityMarker, repository);
+    return authorities;
   } finally {
     await fsp.rm(archivePath, { force: true }).catch(() => {});
   }
 }
 
 async function ensureSamsungCertificateAuthorities(event) {
-  let repository;
+  let repository = "";
+  let certificateError = null;
   try {
     repository = await getSamsungCertificateExtensionRepository();
   } catch (error) {
+    certificateError = error;
     if (samsungCertificateAuthoritiesAreCached()) {
       emit(event, {
         type: "info",
@@ -1369,13 +1417,32 @@ async function ensureSamsungCertificateAuthorities(event) {
       });
       return;
     }
-    throw error;
   }
 
-  if (repository === await readSamsungCertificateAuthorityMarker() && samsungCertificateAuthoritiesAreCached()) {
+  if (repository && repository === await readSamsungCertificateAuthorityMarker() && samsungCertificateAuthoritiesAreCached()) {
     return;
   }
-  await downloadSamsungCertificateAuthorities(event, repository);
+
+  if (repository) {
+    emit(event, { type: "info", text: "The cached Samsung certificate authorities are out of date; refreshing them before signing." });
+    try {
+      const authorities = await downloadSamsungCertificateAuthorities(event, repository);
+      await installSamsungCertificateAuthorities(authorities, repository);
+      return;
+    } catch (error) {
+      certificateError = error;
+    }
+  }
+
+  const bundledAuthorities = getBundledSamsungCertificateAuthorities();
+  if (!bundledAuthorities) {
+    throw certificateError;
+  }
+  emit(event, {
+    type: "warning",
+    text: `Could not download the Samsung certificate authorities (${certificateError?.message || String(certificateError)}); using the copy bundled with the installer instead.`
+  });
+  await installSamsungCertificateAuthorities(bundledAuthorities, repository);
 }
 
 function isUsableSamsungCertificateConfig(certificateConfig, duid = "") {
@@ -2682,4 +2749,4 @@ ipcMain.handle("installer:copyText", async (_event, text) => {
   return true;
 });
 
-module.exports = { runSamsung, runLg, getRecentReleases, listRegisteredLgDevices, migrateLegacySamsungCertificateStore, parseAresListFullVersion };
+module.exports = { runSamsung, runLg, getRecentReleases, listRegisteredLgDevices, migrateLegacySamsungCertificateStore, parseAresListFullVersion, downloadFile, getBundledSamsungCertificateAuthorities, ensureSamsungCertificateAuthorities };
