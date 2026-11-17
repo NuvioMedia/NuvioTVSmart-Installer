@@ -75,6 +75,8 @@ For every Samsung install or update, the installer:
 4. signs the WGT locally;
 5. uploads and installs it with `vd_appinstall`.
 
+Signing uses Samsung's certificate authorities, cached from the Samsung Tizen certificate extension and refreshed when Samsung publishes a new one. If that download is blocked or arrives damaged (antivirus web scanning, proxies), the installer signs with the same authorities bundled in the app instead of failing the install.
+
 The package is rejected before signing if any of these service requirements is missing:
 
 - `http://tizen.org/feature/web.service` in `config.xml`;
