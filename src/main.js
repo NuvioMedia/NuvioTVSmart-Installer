@@ -19,6 +19,7 @@ const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
 const { Signature, SamsungCertificateCreator } = require("tizen");
 const { hasValidSamsungAuthorChain } = require("./samsung-certificate-chain");
 const { parseSamsungDuid } = require("./samsung-duid");
+const { quoteShellArgument } = require("./shell-command");
 
 const configPath = path.join(__dirname, "..", "installer.config.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -291,11 +292,12 @@ function resolveSpawnSpec(command, args) {
     };
   }
 
+  const useShell = isWindows && /\.(?:bat|cmd)$/i.test(String(command));
   return {
-    command,
-    args,
+    command: useShell ? quoteShellArgument(command) : command,
+    args: useShell ? args.map(quoteShellArgument) : args,
     displayCommand: command,
-    shell: isWindows && /\.(?:bat|cmd)$/i.test(String(command)),
+    shell: useShell,
     env: process.env
   };
 }
@@ -1202,6 +1204,10 @@ function samsungPlatformIncompatibilityError(requiredVersion = "", actualVersion
   return error;
 }
 
+function isSamsungPackageDownloadFailure(value) {
+  return /download failed\s*\[\s*16\s*\]/i.test(String(value || ""));
+}
+
 function throwIfSamsungOutputFailed(output, context) {
   const normalizedOutput = String(output || "");
   const failedLine = normalizedOutput
@@ -1212,6 +1218,13 @@ function throwIfSamsungOutputFailed(output, context) {
   if (failedLine) {
     if (failedLine.toLowerCase() === "closed") {
       throw new Error(`${context}: Samsung TV closed the shell command before installation completed.`);
+    }
+    if (isSamsungPackageDownloadFailure(normalizedOutput)) {
+      throw new Error(
+        `${context}: ${failedLine}\n\n` +
+        "The TV could not read the package from the upload path: the WGT is not in /home/owner/share/tmp/sdk_tools. " +
+        "Samsung TVs answer this when they reject the upload or already hold a file with the same name."
+      );
     }
     if (isSamsungCertificateRejection(normalizedOutput)) {
       throw new Error(
@@ -2637,7 +2650,11 @@ async function runSamsung(event, action, options) {
 
         const tizenTarget = fallbackTransport?.type === "sdb" ? fallbackTransport.target : ip;
         emit(event, { type: "info", text: "sdb install failed, trying fallback with the tizen CLI found on the system." });
-        await runCommand(event, tizen, ["install", "-n", installPackagePath, "-t", tizenTarget]);
+        const tizenResult = await captureCommand(event, tizen, ["install", "-n", installPackagePath, "-t", tizenTarget]).catch((error) => {
+          throwIfSamsungOutputFailed(`${error.stdout || ""}\n${error.stderr || ""}`, "tizen install failed");
+          throw error;
+        });
+        throwIfSamsungOutputFailed(tizenResult.stdout, "tizen install failed");
         installedMetadata = await parseTizenPackageMetadata(installPackagePath);
         await verifySamsungInstalledPackage(event, fallbackTransport, installedMetadata);
         await markSamsungCertificateInstallSuccessful(
