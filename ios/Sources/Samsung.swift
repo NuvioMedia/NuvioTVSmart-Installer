@@ -182,9 +182,15 @@ struct Samsung {
         emit("info", "Samsung TV reports Tizen \(actual); package requires Tizen \(required) or later.")
     }
 
+    // getduid can print a diagnostic line before the DUID on some TVs; only a bare id is valid.
+    static func parseDuid(_ output: String) -> String {
+        output.lines.map(\.trimmed).first(where: { $0.matches(#"^[A-Za-z0-9]{10,64}$"#) }) ?? ""
+    }
+
     func getDuid(_ t: SamsungTransport) async throws -> String {
         let out = try await t.shell(emit, ["0", "getduid"], .init(timeoutMs: 10000))
-        guard let duid = out.lines.map(\.trimmed).first(where: { !$0.isEmpty }) else {
+        let duid = Self.parseDuid(out)
+        guard !duid.isEmpty else {
             throw InstallerError("Unable to read the Samsung TV DUID.")
         }
         emit("info", "Detected Samsung DUID: \(duid)")
