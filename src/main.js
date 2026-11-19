@@ -18,6 +18,7 @@ const forge = require("node-forge");
 const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
 const { Signature, SamsungCertificateCreator } = require("tizen");
 const { hasValidSamsungAuthorChain } = require("./samsung-certificate-chain");
+const { parseSamsungDuid } = require("./samsung-duid");
 
 const configPath = path.join(__dirname, "..", "installer.config.json");
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -1687,7 +1688,7 @@ function waitForSamsungAccessInfo(event) {
 
 async function getSamsungDuid(event, transport) {
   const result = await captureSamsungShell(event, transport, ["0", "getduid"], { timeoutMs: 10000 });
-  const duid = result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+  const duid = parseSamsungDuid(result.stdout);
   if (!duid) {
     throw new Error("Unable to read the Samsung TV DUID.");
   }

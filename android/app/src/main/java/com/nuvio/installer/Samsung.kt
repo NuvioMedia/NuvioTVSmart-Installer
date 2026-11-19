@@ -27,6 +27,11 @@ class Samsung(
         val INSPECTED_FILES = setOf("config.xml", "tizen-manifest.xml", "main.js", "index.html",
             "services/tizen/enginefs-service.js", "services/tizen/plugin-service.js")
 
+        val DUID_PATTERN = Regex("""^[A-Za-z0-9]{10,64}$""")
+
+        // getduid can print a diagnostic line before the DUID on some TVs; only a bare id is valid.
+        fun parseDuid(output: String) = output.lines2().map { it.trim() }.firstOrNull { DUID_PATTERN.matches(it) }.orEmpty()
+
         fun isClosedOutput(output: String) = output.lines2().any { it.trim().lowercase() == "closed" }
         fun isClosedError(error: Throwable): Boolean {
             val e = error as? InstallerError
@@ -213,7 +218,7 @@ class Samsung(
 
     private suspend fun getDuid(t: SamsungTransport): String {
         val out = t.shell(emit, listOf("0", "getduid"), SamsungTransport.ShellOptions(timeoutMs = 10_000))
-        val duid = out.lines2().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: throw InstallerError("Unable to read the Samsung TV DUID.")
+        val duid = parseDuid(out).ifEmpty { throw InstallerError("Unable to read the Samsung TV DUID.") }
         emit("info", "Detected Samsung DUID: $duid")
         return duid
     }
