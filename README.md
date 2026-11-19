@@ -48,7 +48,7 @@ The installer reads the release configuration from `installer.config.json`, down
 
 ## Supported TVs
 
-- **Samsung Tizen 4+** — standalone WGT installation through Developer Mode; EngineFS/P2P starts at Tizen 5, and executable plugins are supported from Tizen 6.
+- **Samsung Tizen 4+** — 2018 and newer; standalone WGT installation through Developer Mode; EngineFS/P2P starts at Tizen 5, and executable plugins are supported from Tizen 6. 2016 and 2017 sets run older web engines (Tizen 2.4 WebKit, Tizen 3.0 Chromium 47) and are below the supported baseline, so the standalone app cannot run there.
 - **LG webOS 5+** — installation through the official webOS Developer Mode tools.
 
 The Nuvio TV package uses the bundled local companion service where the TV platform supports it. No external torrent or streaming server is configured or required. The installer never permits a Samsung installation or update when the WGT does not contain the required local service.
